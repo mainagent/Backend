@@ -226,23 +226,25 @@ def elevenlabs_webhook():
     # 1) Verify signature if a secret is configured
     raw = request.get_data()  # raw bytes
     provided_sig = request.headers.get("X-ElevenLabs-Signature", "")
+    print(f"[11L] webhook hit. len={len(raw)} provided_sig={provided_sig[:12]}")
 
     if ELEVENLABS_WEBHOOK_SECRET:
         computed = hmac.new(ELEVENLABS_WEBHOOK_SECRET.encode("utf-8"),
                             raw, hashlib.sha256).hexdigest()
+        print(f"[11L] computed_sig={computed[:12]}...")
         if not hmac.compare_digest(provided_sig, computed):
-            print("[11L] bad signature")
+            print("[11L] bad signature MISMATCH -> returning 400")
             return ("bad signature", 400)
 
     # 2) Parse the event and log it
     try:
         evt = request.get_json(force=True)
     except Exception as e:
-        print("[11L] JSON parse error:", e)
+        print(f"[11L] JSON parse error: {e} raw[:200]={raw[:200]!r}")
         return ("bad json", 400)
 
     etype = evt.get("type")
-    print(f"[11L] webhook event: {etype}")
+    print(f"[11L] event type={etype} keys={list(evt.keys())[:10]}")
     # You’ll start seeing what 11Labs sends. Handle what you need here:
     # - transcript.final / conversation.transcript.final
     # - agent_response / call.completed, etc.
