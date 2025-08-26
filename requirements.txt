@@ -6,3 +6,4 @@ google-api-python-client==2.149.0
 google-auth==2.35.0
 google-auth-oauthlib==1.2.1
 gunicorn==22.0.0
+elevenlabs==1.2.0
