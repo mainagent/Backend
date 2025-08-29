@@ -150,8 +150,16 @@ def portal_create_booking():
         return jsonify({"error": "forbidden"}), 403
     data = request.get_json(force=True) or {}
     clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip()
-    if not (data.get("name") and data.get("date") and data.get("time")):
-        return jsonify({"error": "missing name/date/time"}), 400
+
+    # --- NEW VALIDATION ---
+    if not data.get("name"):
+        return jsonify({"error": "missing name"}), 400
+    if not (data.get("email") or data.get("phone")):
+        return jsonify({"error": "need at least email or phone"}), 400
+    if not (data.get("date") and data.get("time")):
+        return jsonify({"error": "missing date/time"}), 400
+    
+    # Store booking
     booking_id = store_booking(clinic, data)
     return jsonify({"ok": True, "id": booking_id, "clinic": clinic})
 
