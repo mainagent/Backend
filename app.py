@@ -2,9 +2,7 @@ from __future__ import annotations
 from flask import Flask, request, jsonify, send_file
 from resend_notification import handle_resend_notification
 from elevenlabs.client import ElevenLabs
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import formataddr
 from io import BytesIO
 from dotenv import load_dotenv
 import base64
@@ -251,17 +249,7 @@ def send_email_helper(to, subject, body):
         server.sendmail(os.getenv("EMAIL_USER"), [to], msg.as_string())
 
 # ---------------- BOOK APPOINTMENT ----------------
-def send_email_html(to: str, subject: str, html: str):
-    sender_email = os.getenv("EMAIL_USER")
-    sender_name  = os.getenv("EMAIL_FROM_NAME", "Tandläkarkliniken")
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = formataddr((sender_name, sender_email))
-    msg["To"]      = to
-    msg.attach(MIMEText(html, "html", "utf-8"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(os.getenv("EMAIL_USER"), os.getenv("EMAIL_PASS"))
-        server.sendmail(sender_email, [to], msg.as_string())
+# (HTML email helper moved to portal.py; import it below.)
 
 @app.route("/book", methods=["POST"])
 def book():
@@ -289,6 +277,7 @@ def book():
 
 @app.route("/resend_confirmation", methods=["POST"])
 def resend_confirmation():
+    # uses send_email_html imported from portal
     data = request.get_json() or {}
     appointment_id = (data.get("appointment_id") or "").strip().upper()
     appt = None
@@ -342,6 +331,7 @@ def resend_confirmation():
       </body>
     </html>
     """
+    from portal import send_email_html  # import here to avoid circulars on startup
     send_email_html(
         to=appt["email"],
         subject="Din tandläkartid (påminnelse)",
@@ -449,13 +439,6 @@ def create_booking_via_portal(payload: dict) -> tuple[bool, str]:
 
 @app.post("/process_input")
 def process_input():
-    """
-    Accepts:
-      { "session_id":"...", "text":"...", "is_final": true/false, "lang":"sv-SE",
-        "audio_base64": "...", "audio_mime":"audio/wav" }
-    Returns:
-      { "response":"...", "end_turn": bool }
-    """
     data = request.get_json() or {}
     is_final = bool(data.get("is_final"))
     lang = (data.get("lang") or "sv-SE").strip()
@@ -467,20 +450,9 @@ def process_input():
     print(f"[IN] text_in='{text_in}' lang={lang} is_final={is_final}")
 
     corrected_text = text_in
-
-    # --- Whisper block (optional) ---
-    # if is_final and audio_b64:
-    #     try:
-    #         audio_bytes = base64.b64decode(audio_b64)
-    #         whisper_text = transcribe_with_whisper(audio_bytes, mime=audio_mime)
-    #         corrected_text = whisper_text.strip() or text_in
-    #     except Exception as e:
-    #         print(f"[WARN] Whisper failed, falling back to frontend text: {e}")
-
     if not corrected_text:
         return jsonify({"error": "No text"}), 400
 
-    # GPT repair + normalization
     try:
         print("[GPT] calling repair_text_with_gpt...")
         corrected_text = repair_text_with_gpt(corrected_text, lang=lang)
@@ -490,7 +462,6 @@ def process_input():
     corrected_text = normalize_contacts(corrected_text)
     print(f"[NORM] after normalize='{corrected_text}'")
 
-    # >>> Booking intent first
     booking = parse_booking(corrected_text)
     if booking:
         ok, info = create_booking_via_portal(booking)
@@ -507,12 +478,11 @@ def process_input():
         print(f"[BOOK] {('ok id='+info) if ok else info}")
         return jsonify({"response": reply, "end_turn": is_final})
 
-    # Fallback echo
     reply = f"Jag hörde: {corrected_text}"
     print(f"[OUT] reply='{reply}'")
     return jsonify({"response": reply, "end_turn": is_final})
 
-from portal import init_portal
+from portal import init_portal  # send_email_html is imported lazily where needed
 init_portal(app)
 
 if __name__ == "__main__":

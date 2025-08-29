@@ -1,7 +1,10 @@
 # portal.py
-import os, sqlite3
+import os, sqlite3, smtplib
 from datetime import datetime
 from flask import Blueprint, request, jsonify
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formataddr
 
 bp = Blueprint("portal", __name__)
 
@@ -83,6 +86,21 @@ def reschedule_booking(booking_id: int, date: str, time: str):
         cx.execute("UPDATE bookings SET date=?, time=? WHERE id=?", (date, time, booking_id))
         cx.commit()
 
+# --- Email helper (HTML) — moved here ---
+def send_email_html(to: str, subject: str, html: str):
+    sender_email = os.getenv("EMAIL_USER")
+    sender_name  = os.getenv("EMAIL_FROM_NAME", "Tandläkarkliniken")
+    if not (sender_email and to):
+        raise ValueError("Missing EMAIL_USER or recipient")
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = formataddr((sender_name, sender_email))
+    msg["To"]      = to
+    msg.attach(MIMEText(html, "html", "utf-8"))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(os.getenv("EMAIL_USER"), os.getenv("EMAIL_PASS"))
+        server.sendmail(sender_email, [to], msg.as_string())
+
 def require_portal_key(req) -> bool:
     key = req.headers.get("X-Portal-Key", "")
     return key and key == PORTAL_API_KEY
@@ -151,7 +169,7 @@ def portal_create_booking():
     data = request.get_json(force=True) or {}
     clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip()
 
-    # --- NEW VALIDATION ---
+    # --- validation ---
     if not data.get("name"):
         return jsonify({"error": "missing name"}), 400
     if not (data.get("email") or data.get("phone")):
@@ -161,7 +179,43 @@ def portal_create_booking():
     
     # Store booking
     booking_id = store_booking(clinic, data)
-    return jsonify({"ok": True, "id": booking_id, "clinic": clinic})
+
+    # Send confirmation email if email present
+    email_sent = False
+    to_email = (data.get("email") or "").strip()
+    if to_email:
+        try:
+            html = f"""
+            <!doctype html>
+            <html>
+              <body style="font-family:-apple-system, Segoe UI, Roboto, Arial; background:#f8fafc; padding:24px;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px; margin:auto; background:white; border-radius:12px; box-shadow:0 1px 6px rgba(0,0,0,0.06);">
+                  <tr>
+                    <td style="padding:24px 28px;">
+                      <h2 style="margin:0 0 12px 0; font-size:20px; color:#0f172a;">Bokningsbekräftelse</h2>
+                      <p style="margin:0 0 16px 0; color:#334155;">
+                        Hej <strong>{data.get('name','')}</strong>! Din tid är bokad.
+                      </p>
+                      <table cellpadding="0" cellspacing="0" style="width:100%; background:#f1f5f9; border-radius:8px; padding:12px;">
+                        <tr><td><strong>Klinik:</strong> {clinic.capitalize()}</td></tr>
+                        <tr><td><strong>Behandling:</strong> {data.get('treatment') or '—'}</td></tr>
+                        <tr><td><strong>Datum:</strong> {data.get('date')}</td></tr>
+                        <tr><td><strong>Tid:</strong> {data.get('time')}</td></tr>
+                        <tr><td><strong>Boknings-ID:</strong> {booking_id}</td></tr>
+                      </table>
+                      <p style="margin:16px 0 0 0; color:#475569;">Behöver du omboka? Svara på detta mail.</p>
+                    </td>
+                  </tr>
+                </table>
+              </body>
+            </html>
+            """
+            send_email_html(to_email, "Bokningsbekräftelse", html)
+            email_sent = True
+        except Exception as e:
+            print(f"[EMAIL] failed to send confirmation: {e}")
+
+    return jsonify({"ok": True, "id": booking_id, "clinic": clinic, "email_sent": email_sent})
 
 # expose entrypoint for app.py
 def init_portal(app):
