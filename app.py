@@ -27,9 +27,14 @@ load_dotenv()
 load_dotenv(override=True)
 XI_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_WEBHOOK_SECRET = os.getenv("ELEVENLABS_WEBHOOK_SECRET", "")
+
+# >>> NEW: portal/env for bookings + clinic tag
+PORTAL_BASE = os.getenv("PORTAL_BASE", "http://127.0.0.1:5000")
+PORTAL_KEY  = os.getenv("PORTAL_API_KEY", "")
+CLINIC      = os.getenv("CLINIC", "mathias")
+
 from openai import OpenAI
 client_oa = OpenAI()
-
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
@@ -37,11 +42,6 @@ def _make_short_id(k=4):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=k))
 
 def _get_gcal_service():
-    """
-    Loads/creates OAuth token at token.json (server-side).
-    First run will open a browser window to authorize.
-    After that, token.json is reused.
-    """
     creds = None
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
@@ -56,18 +56,12 @@ def _get_gcal_service():
     return build("calendar", "v3", credentials=creds)
 
 def _compose_event(data: dict):
-    """
-    Build a Calendar event from booking data.
-    Expects data with: name, email (optional), date(YYYY-MM-DD), time(HH:MM), treatment.
-    Creates a 30-min slot in your local time zone.
-    """
     tz = os.getenv("GCAL_TZ", "Europe/Stockholm")
     date = data.get("date", "")
     time = data.get("time", "")
     name = data.get("name", "")
     treatment = data.get("treatment", "Behandling")
 
-    # start/end
     start_dt = dt.datetime.fromisoformat(f"{date}T{time}:00")
     end_dt = start_dt + dt.timedelta(minutes=30)
 
@@ -83,13 +77,7 @@ def _compose_event(data: dict):
         "attendees": attendees,
     }
 
-
 def repair_text_with_gpt(text: str, lang: str = "sv-SE") -> str:
-    """
-    Correct ASR-style mistakes without changing meaning.
-    Special handling for Swedish/English mixes, digits, times, and emails.
-    Return ONLY the corrected text.
-    """
     system_prompt = (
         "Du är ett transkript-reparationsfilter för svenska/engelska. "
         "Korrigera fel från tal-till-text utan att ändra betydelsen.\n"
@@ -111,7 +99,6 @@ def repair_text_with_gpt(text: str, lang: str = "sv-SE") -> str:
     )
     return (resp.choices[0].message.content or "").strip()
 
-# Swedish/English words → symbols for emails
 _SW_TO_SYMBOL = {
     " snabela ": " @ ",
     " at ": " @ ",
@@ -119,7 +106,6 @@ _SW_TO_SYMBOL = {
     " dot ": " . ",
     " prick ": " . ",
 }
-
 _WORD_TO_DIGIT = {
     "noll":"0","zero":"0",
     "ett":"1","en":"1","one":"1",
@@ -132,23 +118,15 @@ _WORD_TO_DIGIT = {
     "åtta":"8","atta":"8","eight":"8",
     "nio":"9","nine":"9",
 }
-
 def normalize_contacts(s: str) -> str:
-    """Deterministic cleanup for emails, digit sequences, and times."""
     t = f" {s} "
-
-    # 1) Email words → symbols
     low = t.lower()
     for k, v in _SW_TO_SYMBOL.items():
         low = low.replace(k, v)
-
-    # Collapse spaces around @ and .
     low = re.sub(r"\s*@\s*", "@", low)
     low = re.sub(r"\s*\.\s*", ".", low)
-    # .kom -> .com
     low = re.sub(r"\.kom\b", ".com", low)
 
-    # 2) Join long digit sequences (phone numbers)
     tokens = low.split()
     out = []
     i = 0
@@ -167,10 +145,7 @@ def normalize_contacts(s: str) -> str:
             out.append(tok)
             i += 1
     low = " ".join(out)
-
-    # 3) Time "10 00" → "10:00"
     low = re.sub(r"\b(\d{1,2})[ ](\d{2})\b", r"\1:\2", low)
-
     return low.strip()
 
 app = Flask(__name__)
@@ -178,32 +153,25 @@ app = Flask(__name__)
 # Temporary in-memory "database"
 appointments = {}
 
-# new helper function here
 def generate_short_id(length=4):
-    chars = string.ascii_uppercase + string.digits # A-Z + 0-9
+    chars = string.ascii_uppercase + string.digits
     while True:
         short_id = ''.join(random.choices(chars, k=length))
-        if short_id not in appointments: # avoid collision
+        if short_id not in appointments:
             return short_id
 
 from routes.generate_audio import tts_bp
 app.register_blueprint(tts_bp)
 
 def transcribe_with_whisper(audio_bytes: bytes, mime: str = "audio/wav") -> str:
-    """
-    Sends audio bytes to OpenAI Whisper API and returns text.
-    Supports common mime types: audio/wav, audio/mpeg (mp3), audio/webm, etc.
-    """
-    # OpenAI SDK expects a file-like object
     file_like = BytesIO(audio_bytes)
     file_like.name = f"input.{ 'mp3' if mime=='audio/mpeg' else 'wav' }"
-
     resp = client_oa.audio.transcriptions.create(
         model="whisper-1",
         file=("audio", file_like, mime)
     )
-    # SDK returns a structure with .text
     return resp.text
+
 def _extract_final_text(evt: dict) -> str:
     return (
         evt.get("text")
@@ -220,11 +188,11 @@ def _post_eleven_response(conversation_id: str, text: str) -> requests.Response:
         "X-Requested-With": "python",
     }
     return requests.post(url, headers=headers, json={"response": {"text": text}}, timeout=15)
+
 # --- ElevenLabs webhook receiver ---
 @app.post("/webhooks/elevenlabs")
 def elevenlabs_webhook():
-    # 1) Verify signature if a secret is configured
-    raw = request.get_data()  # raw bytes
+    raw = request.get_data()
     provided_sig = request.headers.get("X-ElevenLabs-Signature", "")
     print(f"[11L] webhook hit. len={len(raw)} provided_sig={provided_sig[:12]}")
 
@@ -236,7 +204,6 @@ def elevenlabs_webhook():
             print("[11L] bad signature MISMATCH -> returning 400")
             return ("bad signature", 400)
 
-    # 2) Parse the event and log it
     try:
         evt = request.get_json(force=True)
     except Exception as e:
@@ -245,10 +212,6 @@ def elevenlabs_webhook():
 
     etype = evt.get("type")
     print(f"[11L] event type={etype} keys={list(evt.keys())[:10]}")
-    # You’ll start seeing what 11Labs sends. Handle what you need here:
-    # - transcript.final / conversation.transcript.final
-    # - agent_response / call.completed, etc.
-
     return jsonify(ok=True)
 
 @app.route("/ping")
@@ -259,8 +222,6 @@ def ping():
 def track_package():
     data = request.get_json()
     tracking_number = data.get("tracking_number")
-
-    # 🧪 Mock response for now
     return jsonify({
         "status": "Package is at terminal",
         "last_location": "Gothenburg, Sweden",
@@ -271,8 +232,6 @@ def track_package():
 def recheck_sms():
     data = request.get_json()
     tracking_number = data.get("tracking_number", "")
-    
-    # Just returning mock response for now
     return jsonify({
         "action": "recheck_sms",
         "status": "SMS notification resent",
@@ -281,35 +240,25 @@ def recheck_sms():
 
 # ---------------- EMAIL HELPER ----------------
 def send_email_helper(to, subject, body):
-    """Helper to actually send email via Gmail SMTP"""
     if not to or "@" not in to:
         raise ValueError("Invalid or missing 'to' address")
-
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = os.getenv("EMAIL_USER")
     msg["To"] = to
-
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(os.getenv("EMAIL_USER"), os.getenv("EMAIL_PASS"))
         server.sendmail(os.getenv("EMAIL_USER"), [to], msg.as_string())
 
-
 # ---------------- BOOK APPOINTMENT ----------------
-
 def send_email_html(to: str, subject: str, html: str):
-    """
-    Send a simple HTML email via Gmail SMTP using EMAIL_USER / EMAIL_PASS.
-    """
     sender_email = os.getenv("EMAIL_USER")
     sender_name  = os.getenv("EMAIL_FROM_NAME", "Tandläkarkliniken")
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = formataddr((sender_name, sender_email))
     msg["To"]      = to
-
     msg.attach(MIMEText(html, "html", "utf-8"))
-
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(os.getenv("EMAIL_USER"), os.getenv("EMAIL_PASS"))
         server.sendmail(sender_email, [to], msg.as_string())
@@ -318,18 +267,13 @@ def send_email_html(to: str, subject: str, html: str):
 def book():
     try:
         data = request.get_json(force=True) or {}
-        # Basic validation
         for f in ("name", "date", "time"):
             if not data.get(f):
                 return jsonify({"status": "error", "error": f"Missing field: {f}"}), 400
-
         service = _get_gcal_service()
         event = _compose_event(data)
         created = service.events().insert(calendarId="primary", body=event, sendUpdates="all").execute()
-
         appt_id = _make_short_id()
-        # you could persist (appt_id -> created['id']) in a DB later
-
         return jsonify({
             "status": "success",
             "method": "google_calendar",
@@ -340,54 +284,43 @@ def book():
             "calendar_event_id": created.get("id"),
             "htmlLink": created.get("htmlLink"),
         }), 200
-
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
 @app.route("/resend_confirmation", methods=["POST"])
 def resend_confirmation():
     data = request.get_json() or {}
-
-    # ---------- Option A: short ID first ----------
     appointment_id = (data.get("appointment_id") or "").strip().upper()
     appt = None
     target_id = None
-
     if appointment_id:
         appt = appointments.get(appointment_id)
         if appt:
             target_id = appointment_id
         else:
             appointment_id = ""
-
-    # ---------- Option B: fallback if ID missing or not found ----------
     if not appt:
         name = (data.get("name") or "").strip().lower()
         date = (data.get("date") or "").strip()
         time = (data.get("time") or "").strip()
-
         if not (name and date and time):
             return jsonify({
                 "error": "Provide either a valid appointment_id OR name+date+time"
             }), 400
-
         matches = [
             (aid, a) for aid, a in appointments.items()
             if a.get("name","").strip().lower() == name
             and a.get("date","").strip() == date
             and a.get("time","").strip() == time
         ]
-
         if not matches:
             return jsonify({"error": "No matching appointment found"}), 404
         if len(matches) > 1:
             return jsonify({
                 "error": "Multiple matches found; please provide appointment_id"
             }), 409
-
         target_id, appt = matches[0]
 
-    # ---------- Resend HTML email ----------
     html = f"""
     <!doctype html>
     <html>
@@ -396,16 +329,12 @@ def resend_confirmation():
           <tr>
             <td style="padding:24px 28px;">
               <h2 style="margin:0 0 12px 0; font-size:20px; color:#0f172a;">Bokningsbekräftelse (igen)</h2>
-              <p style="margin:0 0 16px 0; color:#334155;">
-                Hej <strong>{appt['name']}</strong>! Här är din bokningsbekräftelse igen.
-              </p>
               <table cellpadding="0" cellspacing="0" style="width:100%; background:#f1f5f9; border-radius:8px; padding:12px;">
                 <tr><td><strong>Behandling:</strong> {appt['treatment']}</td></tr>
                 <tr><td><strong>Datum:</strong> {appt['date']}</td></tr>
                 <tr><td><strong>Tid:</strong> {appt['time']}</td></tr>
                 <tr><td><strong>Boknings-ID:</strong> {target_id}</td></tr>
               </table>
-              <p style="margin:16px 0 0 0; color:#475569;">Om du behöver omboka, svara på detta mail eller ring oss.</p>
               <p style="margin:8px 0 0 0; color:#64748b; font-size:12px;">Vänliga hälsningar,<br/>Tandläkarkliniken</p>
             </td>
           </tr>
@@ -413,53 +342,34 @@ def resend_confirmation():
       </body>
     </html>
     """
-
     send_email_html(
         to=appt["email"],
         subject="Din tandläkartid (påminnelse)",
         html=html
     )
-
     return jsonify({
         "status": "resent",
         "appointment_id": target_id,
         "email": appt["email"]
     }), 200
 
-
-# ---------------- SEND EMAIL ROUTE (manual test) ----------------
 @app.route("/send_email", methods=["POST"])
 def send_email():
-    """
-    Real email sender via Gmail SMTP.
-    Expects JSON:
-    {
-      "to": "customer@example.com",
-      "subject": "Din avisering",
-      "body": "Hej! Ditt paket ..."
-    }
-    """
     try:
         data = request.get_json(force=True) or {}
         to = (data.get("to") or "").strip()
         subject = (data.get("subject") or "").strip()
         body = (data.get("body") or "").strip()
-
         send_email_helper(to, subject, body)
-
         return jsonify({"status": "sent", "to": to, "subject": subject}), 200
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/flag_human_support_request", methods=["POST"])
 def flag_human_support_request():
     data = request.get_json()
     tracking_number = data.get("tracking_number")
     reason = data.get("reason", "Unclear issue")
-
-    # 📌 Mock response for now
     return jsonify({
         "action": "flag_human_support_request",
         "status": "Human support flagged for follow-up",
@@ -475,8 +385,6 @@ def resend_notification():
 def verify_customs_docs_needed():
     data = request.get_json()
     tracking_number = data.get("tracking_number")
-
-    # 🧪 Mock logic: Simulate that customs documents are missing
     return jsonify({
         "action": "verify_customs_docs_needed",
         "status": "Customs documents required",
@@ -488,8 +396,6 @@ def verify_customs_docs_needed():
 def provide_est_delivery_window():
     data = request.get_json()
     tracking_number = data.get("tracking_number")
-
-    # 🧠 Mock response with estimated delivery window
     return jsonify({
         "action": "provide_est_delivery_window",
         "tracking_number": tracking_number,
@@ -497,12 +403,56 @@ def provide_est_delivery_window():
         "status": "Delivery window provided"
     })
 
+# ====== NEW: booking intent + portal client ======
+DATE_RE = r"(20\d{2}-\d{2}-\d{2})"
+TIME_RE = r"\b([01]?\d|2[0-3]):([0-5]\d)\b"
+
+def parse_booking(text: str) -> dict | None:
+    t = text.strip().lower()
+    if not any(k in t for k in ["book", "boka", "appointment", "tid"]):
+        return None
+    d = re.search(DATE_RE, t)
+    tm = re.search(TIME_RE, t)
+    if not (d and tm):
+        return None
+    name = None
+    m = re.search(r"(my name is|jag heter)\s+([a-zåäöé\- ]{2,})", t)
+    if m: name = m.group(2).title().strip()
+    return {
+        "clinic": CLINIC,
+        "name": name or "Okänd",
+        "email": None,
+        "phone": None,
+        "date": d.group(1),
+        "time": f"{tm.group(1)}:{tm.group(2)}",
+        "treatment": None,
+    }
+
+def create_booking_via_portal(payload: dict) -> tuple[bool, str]:
+    try:
+        r = requests.post(
+            f"{PORTAL_BASE}/portal/api/bookings/new",
+            headers={
+                "Content-Type": "application/json",
+                "X-Portal-Key": PORTAL_KEY,
+            },
+            params={"clinic": payload.get("clinic", CLINIC)},
+            json=payload,
+            timeout=10,
+        )
+        if r.status_code == 200 and (r.json() or {}).get("ok"):
+            return True, str((r.json() or {}).get("id"))
+        return False, f"portal error {r.status_code}: {r.text[:200]}"
+    except Exception as e:
+        return False, f"portal exception: {e}"
+# ================================================
+
 @app.post("/process_input")
 def process_input():
     """
     Accepts:
       { "session_id":"...", "text":"...", "is_final": true/false, "lang":"sv-SE",
-        "audio_base64": "...", "audio_mime":"audio/wav" }  # audio optional
+        "audio_base64": "...", "audio_mime":"audio/wav" }
     Returns:
       { "response":"...", "end_turn": bool }
     """
@@ -518,9 +468,7 @@ def process_input():
 
     corrected_text = text_in
 
-    # If we ever send audio later, Whisper can override text here (already added earlier).
-    # For now, if no audio is provided, we still do GPT repair.
-    # --- Whisper block (keep if you added it previously) ---
+    # --- Whisper block (optional) ---
     # if is_final and audio_b64:
     #     try:
     #         audio_bytes = base64.b64decode(audio_b64)
@@ -528,29 +476,45 @@ def process_input():
     #         corrected_text = whisper_text.strip() or text_in
     #     except Exception as e:
     #         print(f"[WARN] Whisper failed, falling back to frontend text: {e}")
-    # -------------------------------------------------------
 
     if not corrected_text:
         return jsonify({"error": "No text"}), 400
 
-    # 🔧 NEW: GPT repair layer (works even for text-only)
+    # GPT repair + normalization
     try:
         print("[GPT] calling repair_text_with_gpt...")
-        gpt_out = repair_text_with_gpt(corrected_text, lang=lang)
-        print(f"[GPT] result='{gpt_out}'")
         corrected_text = repair_text_with_gpt(corrected_text, lang=lang)
+        print(f"[GPT] result='{corrected_text}'")
     except Exception as e:
         print(f"[WARN] GPT repair failed: {e}")
-        # fall back to original text
     corrected_text = normalize_contacts(corrected_text)
     print(f"[NORM] after normalize='{corrected_text}'")
 
+    # >>> Booking intent first
+    booking = parse_booking(corrected_text)
+    if booking:
+        ok, info = create_booking_via_portal(booking)
+        if ok:
+            reply = (
+                f"Toppen! Jag bokade in en tid för {booking['date']} klockan {booking['time']} "
+                f"hos {CLINIC.capitalize()}. Bokningsnummer {info}. Behöver du något mer?"
+            )
+        else:
+            reply = (
+                "Jag försökte boka men något gick fel. "
+                "Vill du att jag försöker igen eller vill du ge ett annat datum och tid?"
+            )
+        print(f"[BOOK] {('ok id='+info) if ok else info}")
+        return jsonify({"response": reply, "end_turn": is_final})
+
+    # Fallback echo
     reply = f"Jag hörde: {corrected_text}"
     print(f"[OUT] reply='{reply}'")
     return jsonify({"response": reply, "end_turn": is_final})
-    
+
+from portal import init_portal
+init_portal(app)
+
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=PORT)
-
-       
