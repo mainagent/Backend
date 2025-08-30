@@ -1,5 +1,6 @@
 # portal.py
 import os, sqlite3, smtplib
+import threading
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from email.mime.multipart import MIMEMultipart
@@ -107,6 +108,32 @@ def send_email_html(to: str, subject: str, html: str):
         server.login(sender_email, sender_pass)
         server.sendmail(sender_email, [to], msg.as_string())
 
+# --- ADDED: send confirmation email in background so the HTTP request returns fast ---
+def _send_confirmation_async(to_email: str, clinic: str, booking_id: int, data: dict):
+    try:
+        html = f"""
+        <!doctype html><html><body style="font-family:-apple-system, Segoe UI, Roboto, Arial; background:#f8fafc; padding:24px;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px; margin:auto; background:white; border-radius:12px; box-shadow:0 1px 6px rgba(0,0,0,0.06);">
+            <tr><td style="padding:24px 28px;">
+              <h2 style="margin:0 0 12px 0; font-size:20px; color:#0f172a;">Bokningsbekräftelse</h2>
+              <p style="margin:0 0 16px 0; color:#334155;">Hej <strong>{data.get('name','')}</strong>! Din tid är bokad.</p>
+              <table cellpadding="0" cellspacing="0" style="width:100%; background:#f1f5f9; border-radius:8px; padding:12px;">
+                <tr><td><strong>Klinik:</strong> {clinic.capitalize()}</td></tr>
+                <tr><td><strong>Behandling:</strong> {data.get('treatment') or '—'}</td></tr>
+                <tr><td><strong>Datum:</strong> {data.get('date')}</td></tr>
+                <tr><td><strong>Tid:</strong> {data.get('time')}</td></tr>
+                <tr><td><strong>Boknings-ID:</strong> {booking_id}</td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </body></html>
+        """
+        print(f"[EMAIL] sending to {to_email} for booking {booking_id}…")
+        send_email_html(to_email, "Bokningsbekräftelse", html)
+        print(f"[EMAIL] sent ok for booking {booking_id}")
+    except Exception as e:
+        print(f"[EMAIL] failed for booking {booking_id}: {e}")
+
 def require_portal_key(req) -> bool:
     key = req.headers.get("X-Portal-Key", "")
     return key and key == PORTAL_API_KEY
@@ -189,41 +216,17 @@ def portal_create_booking():
     # Store booking
     booking_id = store_booking(clinic, data)
 
-    # Send confirmation email
-    email_sent = False
     to_email = (data.get("email") or "").strip()
-    try:
-        html = f"""
-        <!doctype html>
-        <html>
-          <body style="font-family:-apple-system, Segoe UI, Roboto, Arial; background:#f8fafc; padding:24px;">
-            <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px; margin:auto; background:white; border-radius:12px; box-shadow:0 1px 6px rgba(0,0,0,0.06);">
-              <tr>
-                <td style="padding:24px 28px;">
-                  <h2 style="margin:0 0 12px 0; font-size:20px; color:#0f172a;">Bokningsbekräftelse</h2>
-                  <p style="margin:0 0 16px 0; color:#334155;">
-                    Hej <strong>{data.get('name','')}</strong>! Din tid är bokad.
-                  </p>
-                  <table cellpadding="0" cellspacing="0" style="width:100%; background:#f1f5f9; border-radius:8px; padding:12px;">
-                    <tr><td><strong>Klinik:</strong> {clinic.capitalize()}</td></tr>
-                    <tr><td><strong>Behandling:</strong> {data.get('treatment') or '—'}</td></tr>
-                    <tr><td><strong>Datum:</strong> {data.get('date')}</td></tr>
-                    <tr><td><strong>Tid:</strong> {data.get('time')}</td></tr>
-                    <tr><td><strong>Boknings-ID:</strong> {booking_id}</td></tr>
-                  </table>
-                  <p style="margin:16px 0 0 0; color:#475569;">Behöver du omboka? Svara på detta mail.</p>
-                </td>
-              </tr>
-            </table>
-          </body>
-        </html>
-        """
-        send_email_html(to_email, "Bokningsbekräftelse", html)
-        email_sent = True
-    except Exception as e:
-        print(f"[EMAIL] failed to send confirmation: {e}")
+    email_queued = False
+    if to_email:
+        threading.Thread(
+            target=_send_confirmation_async,
+            args=(to_email, clinic, booking_id, data),
+            daemon=True
+        ).start()
+        email_queued = True
 
-    return jsonify({"ok": True, "id": booking_id, "clinic": clinic, "email_sent": email_sent})
+    return jsonify({"ok": True, "id": booking_id, "clinic": clinic, "email_queued": email_queued})
 
 # expose entrypoint for app.py
 def init_portal(app):
