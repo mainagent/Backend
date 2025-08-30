@@ -203,6 +203,9 @@ def portal_create_booking():
     data = request.get_json(force=True) or {}
     clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip()
 
+    print(f"[PORTAL] /bookings/new hit. clinic={clinic}")
+    print(f"[PORTAL] payload={data}")
+
     # --- validation (email REQUIRED, phone optional) ---
     if not data.get("name"):
         return jsonify({"error": "missing name"}), 400
@@ -215,6 +218,7 @@ def portal_create_booking():
 
     # Store booking
     booking_id = store_booking(clinic, data)
+    print(f"[PORTAL] stored booking_id={booking_id}")
 
     to_email = (data.get("email") or "").strip()
     email_queued = False
