@@ -5,6 +5,7 @@ from elevenlabs.client import ElevenLabs
 from email.mime.text import MIMEText
 from io import BytesIO
 from dotenv import load_dotenv
+from flask import send_from_directory
 import base64
 import io
 import os, json
@@ -215,6 +216,10 @@ def elevenlabs_webhook():
 @app.route("/ping")
 def ping():
     return {"message": "✅ Backend is alive!"}, 200
+
+@app.get("/admin")
+def admin_page():
+    return send_from_directory("static", "admin.html")
 
 @app.route("/track", methods=["POST"])
 def track_package():
