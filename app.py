@@ -194,13 +194,13 @@ def elevenlabs_webhook():
     provided_sig = request.headers.get("X-ElevenLabs-Signature", "")
     print(f"[11L] webhook hit. len={len(raw)} provided_sig={provided_sig[:12]}")
 
-    #if ELEVENLABS_WEBHOOK_SECRET:
-     #   computed = hmac.new(ELEVENLABS_WEBHOOK_SECRET.encode("utf-8"),
-      #                      raw, hashlib.sha256).hexdigest()
-       # print(f"[11L] computed_sig={computed[:12]}...")
-        #if not hmac.compare_digest(provided_sig, computed):
-         #   print("[11L] bad signature MISMATCH -> returning 400")
-          #  return ("bad signature", 400)
+    if ELEVENLABS_WEBHOOK_SECRET:
+        computed = hmac.new(ELEVENLABS_WEBHOOK_SECRET.encode("utf-8"),
+                            raw, hashlib.sha256).hexdigest()
+        match = hmac.compare_digest(provided_sig, computed)
+        print(f"[11L] computed_sig={computed[:12]}... sig match={match}")
+        if not match:
+            return ("bad signature", 401)
 
     try:
         evt = request.get_json(force=True)
