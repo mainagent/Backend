@@ -1,5 +1,5 @@
 # portal.py
-import os, sqlite3, smtplib
+import os, sqlite3, smtplib, ssl, requests
 import threading
 from datetime import datetime
 from flask import Blueprint, request, jsonify
@@ -89,24 +89,63 @@ def reschedule_booking(booking_id: int, date: str, time: str):
 
 # --- Email helper (HTML) ---
 def send_email_html(to: str, subject: str, html: str):
-    sender_email = os.getenv("EMAIL_USER")
+    """
+    Sends email via Resend if RESEND_API_KEY is set.
+    Falls back to Gmail SMTP otherwise.
+    """
+    key = (os.getenv("RESEND_API_KEY") or "").strip()
     sender_name  = os.getenv("EMAIL_FROM_NAME", "Tandläkarkliniken")
-    sender_pass  = os.getenv("EMAIL_PASS")
+    from_addr    = os.getenv("EMAIL_USER", "onboarding@resend.dev")
+    reply_to     = (os.getenv("REPLY_TO") or "").strip()
 
-    if not sender_email or not sender_pass:
-        raise ValueError("Missing EMAIL_USER/EMAIL_PASS envs for SMTP")
-    if not to or "@" not in to:
+    if key:
+        try:
+            payload = {
+                "from": f"{sender_name} <{from_addr}>",
+                "to":   [to],
+                "subject": subject,
+                "html": html,
+            }
+            if reply_to:
+                payload["reply_to"] = reply_to
+
+            resp = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=15,
+            )
+            print(f"[EMAIL][resend] status={resp.status_code} body={resp.text[:200]}")
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"[EMAIL][resend] error: {e}")
+            return False
+
+    # Fallback: Gmail SMTP
+    sender_pass = os.getenv("EMAIL_PASS")
+    if not (from_addr and sender_pass):
+        raise ValueError("Missing EMAIL_USER/EMAIL_PASS envs for SMTP fallback")
+
+    if "@" not in to:
         raise ValueError("Invalid recipient email")
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = formataddr((sender_name, sender_email))
+    msg["From"]    = formataddr((sender_name, from_addr))
     msg["To"]      = to
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg.attach(MIMEText(html, "html", "utf-8"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(sender_email, sender_pass)
-        server.sendmail(sender_email, [to], msg.as_string())
+        server.login(from_addr, sender_pass)
+        server.sendmail(from_addr, [to], msg.as_string())
+    print("[EMAIL][smtp] sent ok")
+    return True
 
 # --- ADDED: send confirmation email in background so the HTTP request returns fast ---
 def _send_confirmation_async(to_email: str, clinic: str, booking_id: int, data: dict):
