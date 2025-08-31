@@ -159,6 +159,9 @@ def send_email_html(to: str, subject: str, html: str, reply_to: str | None = Non
 # --- ADDED: send confirmation email in background so the HTTP request returns fast ---
 def _send_confirmation_async(to_email: str, clinic: str, booking_id: int, data: dict):
     try:
+
+        code = f"{booking_id:04d}"
+
         html = f"""
         <!doctype html><html><body style="font-family:-apple-system, Segoe UI, Roboto, Arial; background:#f8fafc; padding:24px;">
           <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px; margin:auto; background:white; border-radius:12px; box-shadow:0 1px 6px rgba(0,0,0,0.06);">
@@ -170,7 +173,7 @@ def _send_confirmation_async(to_email: str, clinic: str, booking_id: int, data: 
                 <tr><td><strong>Behandling:</strong> {data.get('treatment') or '—'}</td></tr>
                 <tr><td><strong>Datum:</strong> {data.get('date')}</td></tr>
                 <tr><td><strong>Tid:</strong> {data.get('time')}</td></tr>
-                <tr><td><strong>Boknings-ID:</strong> {booking_id}</td></tr>
+                <tr><td><strong>Boknings-ID:</strong> {code}</td></tr>
               </table>
             </td></tr>
           </table>
@@ -312,6 +315,15 @@ def portal_create_booking():
     # Store booking
     booking_id = store_booking(clinic, data)
     print(f"[PORTAL] stored booking_id={booking_id}")
+
+    code = f"{booking_id:04d}"
+    with _db() as cx:
+        cx.execute(
+            "UPDATE booking SET appointment_id=? WHERE id=?",
+            (code, booking_id)
+        )
+        cx.commit()
+    print(f"[portal] appointment_id={code} persisted")
 
     to_email = (data.get("email") or "").strip()
     email_queued = False
