@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bookings Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-slate-800">
+
+  <!-- Top bar -->
+  <div class="max-w-6xl mx-auto p-4">
+    <h1 class="text-2xl font-semibold mb-4">Bookings Admin</h1>
+
+    <div class="grid md:grid-cols-3 gap-3 items-end mb-4">
+      <div>
+        <label class="block text-sm mb-1">X-Portal-Key</label>
+        <input id="key" type="password" class="w-full border rounded px-3 py-2"
+               placeholder="Paste your portal key">
+      </div>
+      <div>
+        <label class="block text-sm mb-1">Clinic</label>
+        <input id="clinic" type="text" class="w-full border rounded px-3 py-2"
+               placeholder="mathias" value="mathias">
+      </div>
+      <div class="flex gap-2">
+        <button id="btnReload" class="grow bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded">Reload</button>
+        <button id="btnNew" class="grow bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded">New booking</button>
+      </div>
+    </div>
+
+    <!-- Status line -->
+    <div id="status" class="text-sm text-slate-600 mb-2"></div>
+
+    <!-- Table -->
+    <div class="bg-white border rounded-lg shadow-sm overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead class="bg-slate-100 text-slate-700">
+          <tr>
+            <th class="text-left px-3 py-2">ID</th>
+            <th class="text-left px-3 py-2">Code</th>
+            <th class="text-left px-3 py-2">Namn</th>
+            <th class="text-left px-3 py-2">E-post</th>
+            <th class="text-left px-3 py-2">Telefon</th>
+            <th class="text-left px-3 py-2">Datum</th>
+            <th class="text-left px-3 py-2">Tid</th>
+            <th class="text-left px-3 py-2">Behandling</th>
+            <th class="text-left px-3 py-2">Status</th>
+            <th class="text-left px-3 py-2">Åtgärder</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- New booking modal -->
+  <dialog id="dlgNew" class="rounded-lg p-0 w-full max-w-lg">
+    <form method="dialog" class="p-0">
+      <div class="p-5 border-b">
+        <h2 class="text-lg font-semibold">Ny bokning</h2>
+      </div>
+      <div class="p-5 grid gap-3">
+        <input id="nb_name"  class="border rounded px-3 py-2" placeholder="Namn" required>
+        <input id="nb_email" class="border rounded px-3 py-2" placeholder="E-post (krävs om ingen telefon)">
+        <input id="nb_phone" class="border rounded px-3 py-2" placeholder="Telefon">
+        <input id="nb_date"  class="border rounded px-3 py-2" placeholder="YYYY-MM-DD" required>
+        <input id="nb_time"  class="border rounded px-3 py-2" placeholder="HH:MM" required>
+        <input id="nb_treat" class="border rounded px-3 py-2" placeholder="Behandling">
+      </div>
+      <div class="p-5 border-t flex justify-end gap-2">
+        <button id="btnCancelNew" class="px-4 py-2 rounded border">Avbryt</button>
+        <button id="btnCreate" class="px-4 py-2 rounded bg-emerald-600 text-white">Skapa</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Reschedule modal -->
+  <dialog id="dlgRes" class="rounded-lg p-0 w-full max-w-md">
+    <form method="dialog" class="p-0">
+      <div class="p-5 border-b">
+        <h2 class="text-lg font-semibold">Omboka</h2>
+      </div>
+      <div class="p-5 grid gap-3">
+        <input id="rs_date" class="border rounded px-3 py-2" placeholder="YYYY-MM-DD" required>
+        <input id="rs_time" class="border rounded px-3 py-2" placeholder="HH:MM" required>
+      </div>
+      <div class="p-5 border-t flex justify-end gap-2">
+        <button id="btnCancelRes" class="px-4 py-2 rounded border">Avbryt</button>
+        <button id="btnResGo" class="px-4 py-2 rounded bg-indigo-600 text-white">Spara</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    // --- tiny helpers ---
+    const $ = (id)=>document.getElementById(id);
+    const statusEl = $("status");
+    const rowsEl = $("rows");
+    let rescheduleTargetId = null;
+
+    // persist key/clinic
+    function loadPrefs(){
+      $("key").value = localStorage.getItem("portal_key") || "";
+      $("clinic").value = localStorage.getItem("portal_clinic") || "mathias";
+    }
+    function savePrefs(){
+      localStorage.setItem("portal_key", $("key").value.trim());
+      localStorage.setItem("portal_clinic", $("clinic").value.trim());
+    }
+
+    function showStatus(msg, ok=true){
+      statusEl.textContent = msg;
+      statusEl.className = ok ? "text-sm text-emerald-700 mb-2" : "text-sm text-rose-700 mb-2";
+    }
+
+    function apiHeaders(){
+      const key = $("key").value.trim();
+      return {
+        "Content-Type":"application/json",
+        "X-Portal-Key": key
+      };
+    }
+
+    // --- load table ---
+    async function loadBookings(){
+      savePrefs();
+      rowsEl.innerHTML = "";
+      showStatus("Laddar...");
+      const clinic = $("clinic").value.trim() || "default";
+      try{
+        const r = await fetch(`/portal/api/bookings?clinic=${encodeURIComponent(clinic)}`, {
+          headers: apiHeaders()
+        });
+        if (r.status === 403){ showStatus("403 förbjuden – fel X-Portal-Key", false); return; }
+        if (!r.ok){ showStatus(`Fel ${r.status}`, false); return; }
+        const data = await r.json();
+        renderRows(data.items || []);
+        showStatus(`Hämtade ${ (data.items||[]).length } bokningar`);
+      }catch(e){
+        console.error(e);
+        showStatus("Nätverksfel", false);
+      }
+    }
+
+    function renderRows(items){
+      if (!items.length){
+        rowsEl.innerHTML = `<tr><td colspan="10" class="px-3 py-4 text-slate-500">Inga bokningar.</td></tr>`;
+        return;
+      }
+      rowsEl.innerHTML = items.map(b => `
+        <tr class="border-t">
+          <td class="px-3 py-2">${b.id}</td>
+          <td class="px-3 py-2 font-mono">${b.appointment_id || "—"}</td>
+          <td class="px-3 py-2">${escapeHtml(b.name || "")}</td>
+          <td class="px-3 py-2">${escapeHtml(b.email || "")}</td>
+          <td class="px-3 py-2">${escapeHtml(b.phone || "")}</td>
+          <td class="px-3 py-2">${b.date || ""}</td>
+          <td class="px-3 py-2">${b.time || ""}</td>
+          <td class="px-3 py-2">${escapeHtml(b.treatment || "")}</td>
+          <td class="px-3 py-2">${b.status || ""}</td>
+          <td class="px-3 py-2">
+            <div class="flex flex-wrap gap-2">
+              <button class="px-2 py-1 rounded bg-emerald-600 text-white" onclick="setStatus(${b.id}, 'confirmed')">Bekräfta</button>
+              <button class="px-2 py-1 rounded bg-rose-600 text-white" onclick="setStatus(${b.id}, 'cancelled')">Avboka</button>
+              <button class="px-2 py-1 rounded bg-indigo-600 text-white" onclick="openReschedule(${b.id})">Omboka</button>
+            </div>
+          </td>
+        </tr>
+      `).join("");
+    }
+
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+    // --- actions ---
+    async function setStatus(id, status){
+      savePrefs();
+      try{
+        const r = await fetch(`/portal/api/bookings/${id}/status`, {
+          method: "POST",
+          headers: apiHeaders(),
+          body: JSON.stringify({ status })
+        });
+        if (!r.ok){ showStatus(`Kunde inte uppdatera status (${r.status})`, false); return; }
+        showStatus("Status uppdaterad");
+        loadBookings();
+      }catch(e){
+        console.error(e); showStatus("Nätverksfel", false);
+      }
+    }
+
+    function openReschedule(id){
+      rescheduleTargetId = id;
+      $("rs_date").value = "";
+      $("rs_time").value = "";
+      $("dlgRes").showModal();
+    }
+
+    async function doReschedule(){
+      savePrefs();
+      const id = rescheduleTargetId;
+      const date = $("rs_date").value.trim();
+      const time = $("rs_time").value.trim();
+      $("dlgRes").close();
+      try{
+        const r = await fetch(`/portal/api/bookings/${id}/reschedule`, {
+          method: "POST",
+          headers: apiHeaders(),
+          body: JSON.stringify({ date, time })
+        });
+        if (!r.ok){ showStatus(`Kunde inte omboka (${r.status})`, false); return; }
+        showStatus("Ombokning klar");
+        loadBookings();
+      }catch(e){
+        console.error(e); showStatus("Nätverksfel", false);
+      }
+    }
+
+    function openNew(){
+      $("nb_name").value  = "";
+      $("nb_email").value = "";
+      $("nb_phone").value = "";
+      $("nb_date").value  = "";
+      $("nb_time").value  = "";
+      $("nb_treat").value = "";
+      $("dlgNew").showModal();
+    }
+
+    async function createBooking(){
+      savePrefs();
+      const clinic = $("clinic").value.trim() || "default";
+      const payload = {
+        name: $("nb_name").value.trim(),
+        email: $("nb_email").value.trim() || null,
+        phone: $("nb_phone").value.trim() || null,
+        date: $("nb_date").value.trim(),
+        time: $("nb_time").value.trim(),
+        treatment: $("nb_treat").value.trim() || null
+      };
+      $("dlgNew").close();
+      try{
+        const r = await fetch(`/portal/api/bookings/new?clinic=${encodeURIComponent(clinic)}`, {
+          method: "POST",
+          headers: apiHeaders(),
+          body: JSON.stringify(payload)
+        });
+        if (r.status === 400){
+          const j = await r.json().catch(()=>({error:"400"}));
+          showStatus(`Valideringsfel: ${j.error || "400"}`, false);
+          return;
+        }
+        if (r.status === 403){ showStatus("403 förbjuden – fel X-Portal-Key", false); return; }
+        if (!r.ok){ showStatus(`Fel ${r.status}`, false); return; }
+        const j = await r.json();
+        showStatus(`Bokning skapad (id ${j.id})`);
+        loadBookings();
+      }catch(e){
+        console.error(e); showStatus("Nätverksfel", false);
+      }
+    }
+
+    // events
+    $("btnReload").addEventListener("click", loadBookings);
+    $("btnNew").addEventListener("click", openNew);
+    $("btnCancelNew").addEventListener("click", ()=> $("dlgNew").close());
+    $("btnCreate").addEventListener("click", (ev)=>{ ev.preventDefault(); createBooking(); });
+
+    $("btnCancelRes").addEventListener("click", ()=> $("dlgRes").close());
+    $("btnResGo").addEventListener("click", (ev)=>{ ev.preventDefault(); doReschedule(); });
+
+    // init
+    loadPrefs();
+  </script>
+</body>
+</html>
