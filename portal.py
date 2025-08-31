@@ -207,6 +207,51 @@ def portal_list_bookings():
 def health():
     return jsonify({"status": "ok"})
 
+@bp.post("/portal/api/bookings/resend")
+def portal_resend():
+    if not require_portal_key(request):
+        return jsonify({"error": "forbidden"}), 403
+
+    data = request.get_json(force=True) or {}
+    clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip()
+
+    # Allow either booking_id (preferred) OR name+date+time
+    booking_id = data.get("booking_id") or data.get("id") or data.get("appointment_id")
+    b = None
+
+    if booking_id:
+        try:
+            b = get_booking(int(str(booking_id)))
+        except Exception:
+            return jsonify({"error": "invalid booking_id"}), 400
+        if not b:
+            return jsonify({"error": "not_found"}), 404
+    else:
+        name = (data.get("name") or "").strip()
+        date = (data.get("date") or "").strip()
+        time = (data.get("time") or "").strip()
+        if not (name and date and time):
+            return jsonify({"error": "need booking_id OR name+date+time"}), 400
+        with _db() as cx:
+            rows = cx.execute("""
+                SELECT * FROM bookings
+                WHERE clinic=? AND LOWER(name)=LOWER(?) AND date=? AND time=?
+                ORDER BY id DESC
+            """, (clinic, name, date, time)).fetchall()
+            if not rows:
+                return jsonify({"error": "not_found"}), 404
+            if len(rows) > 1:
+                return jsonify({"error": "multiple_matches_provide_id"}), 409
+            b = dict(rows[0])
+
+    to_email = (b.get("email") or "").strip()
+    if not to_email:
+        return jsonify({"error": "no_email_on_booking"}), 422
+
+    # Send again (non-blocking)
+    _send_confirmation_async(to_email, clinic, b["id"], b)
+    return jsonify({"ok": True, "id": b["id"], "email": to_email})
+
 @bp.get("/portal/api/bookings/<int:booking_id>")
 def portal_get_booking(booking_id: int):
     if not require_portal_key(request):
