@@ -11,6 +11,8 @@ bp = Blueprint("portal", __name__)
 
 PORTAL_API_KEY = os.getenv("PORTAL_API_KEY", "change-me")
 DB_PATH        = os.getenv("BOOKINGS_DB_PATH", "bookings.db")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+REPLY_TO = os.getenv("REPLY_TO", "")
 
 # --- DB helpers ---
 def _db():
@@ -88,64 +90,71 @@ def reschedule_booking(booking_id: int, date: str, time: str):
         cx.commit()
 
 # --- Email helper (HTML) ---
-def send_email_html(to: str, subject: str, html: str):
+def send_email_html(to: str, subject: str, html: str, reply_to: str | None = None) -> bool:
     """
-    Sends email via Resend if RESEND_API_KEY is set.
-    Falls back to Gmail SMTP otherwise.
+    Sends HTML email via Resend if RESEND_API_KEY is set.
+    Falls back to Gmail SMTP if EMAIL_USER/EMAIL_PASS are set.
+    Returns True on success, False otherwise.
     """
-    key = (os.getenv("RESEND_API_KEY") or "").strip()
-    sender_name  = os.getenv("EMAIL_FROM_NAME", "Tandläkarkliniken")
-    from_addr    = os.getenv("EMAIL_USER", "onboarding@resend.dev")
-    reply_to     = (os.getenv("REPLY_TO") or "").strip()
+    to = (to or "").strip()
+    if "@" not in to:
+        print(f"[EMAIL] invalid recipient: {to!r}")
+        return False
 
-    if key:
+    RESEND_API_KEY  = os.getenv("RESEND_API_KEY", "")
+    EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Tandläkarkliniken")
+    EMAIL_USER      = os.getenv("EMAIL_USER", "onboarding@resend.dev")
+    EMAIL_PASS      = os.getenv("EMAIL_PASS", "")
+
+    # Try Resend first
+    if RESEND_API_KEY:
         try:
             payload = {
-                "from": f"{sender_name} <{from_addr}>",
-                "to":   [to],
+                "from":   f"{EMAIL_FROM_NAME} <{EMAIL_USER}>",
+                "to":     [to],
                 "subject": subject,
-                "html": html,
+                "html":    html,
             }
             if reply_to:
                 payload["reply_to"] = reply_to
 
-            resp = requests.post(
+            r = requests.post(
                 "https://api.resend.com/emails",
                 headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json"
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=15,
+                timeout=20,
             )
-            print(f"[EMAIL][resend] status={resp.status_code} body={resp.text[:200]}")
-            resp.raise_for_status()
+            print(f"[EMAIL/RESEND] status={r.status_code} body={r.text[:300]}")
+            r.raise_for_status()
             return True
         except Exception as e:
-            print(f"[EMAIL][resend] error: {e}")
-            return False
+            print(f"[EMAIL/RESEND] failed: {e}")
 
-    # Fallback: Gmail SMTP
-    sender_pass = os.getenv("EMAIL_PASS")
-    if not (from_addr and sender_pass):
-        raise ValueError("Missing EMAIL_USER/EMAIL_PASS envs for SMTP fallback")
+    # SMTP fallback
+    if EMAIL_USER and EMAIL_PASS:
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"]    = formataddr((EMAIL_FROM_NAME, EMAIL_USER))
+            msg["To"]      = to
+            if reply_to:
+                msg["Reply-To"] = reply_to
+            msg.attach(MIMEText(html, "html", "utf-8"))
 
-    if "@" not in to:
-        raise ValueError("Invalid recipient email")
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(EMAIL_USER, EMAIL_PASS)
+                server.sendmail(EMAIL_USER, [to], msg.as_string())
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = formataddr((sender_name, from_addr))
-    msg["To"]      = to
-    if reply_to:
-        msg["Reply-To"] = reply_to
-    msg.attach(MIMEText(html, "html", "utf-8"))
+            print("[EMAIL/SMTP] sent via SMTP fallback")
+            return True
+        except Exception as e:
+            print(f"[EMAIL/SMTP] failed: {e}")
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(from_addr, sender_pass)
-        server.sendmail(from_addr, [to], msg.as_string())
-    print("[EMAIL][smtp] sent ok")
-    return True
+    print("[EMAIL] no provider succeeded (Resend missing/failed and SMTP missing/failed).")
+    return False
 
 # --- ADDED: send confirmation email in background so the HTTP request returns fast ---
 def _send_confirmation_async(to_email: str, clinic: str, booking_id: int, data: dict):
