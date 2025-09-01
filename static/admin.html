@@ -1,344 +1,320 @@
 <!doctype html>
-<html lang="en" class="h-full">
+<html lang="sv">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Bookings Admin</title>
+  <title>Bokningar • Admin</title>
+
+  <!-- Tailwind CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config={darkMode:'class'}</script>
+  <style>
+    /* ---------- Background & Glass ---------- */
+    :root{
+      --bg1:#0b0b0c;       /* near-black */
+      --glow1:#fb6a2c;     /* warm orange glow */
+      --glow2:#7c3aed;     /* purple glow */
+    }
+    body{
+      min-height:100vh;
+      background: radial-gradient(1200px 600px at 15% 0%, rgba(251,106,44,0.18), transparent 60%),
+                  radial-gradient(1000px 500px at 85% 12%, rgba(124,58,237,0.16), transparent 60%),
+                  linear-gradient(180deg, #0b0b0c 0%, #0b0b0c 100%);
+      color: #e5e7eb; /* slate-200 */
+    }
+    .glass{
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.20);
+      box-shadow:
+        0 10px 30px rgba(0,0,0,.35),
+        inset 0 1px 0 rgba(255,255,255,.10);
+      backdrop-filter: blur(18px) saturate(160%);
+      -webkit-backdrop-filter: blur(18px) saturate(160%);
+      border-radius: 16px;
+    }
+    .subglass{
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.12);
+      backdrop-filter: blur(12px) saturate(140%);
+      -webkit-backdrop-filter: blur(12px) saturate(140%);
+      border-radius: 12px;
+    }
+    /* ---------- Small UI helpers ---------- */
+    .chip{ padding: 2px 10px; border-radius: 9999px; font-size:12px; line-height: 18px; }
+    .chip-pending{ background: rgba(234,179,8,.18); color:#facc15; border:1px solid rgba(250,204,21,.35);}
+    .chip-confirmed{ background: rgba(16,185,129,.18); color:#34d399; border:1px solid rgba(52,211,153,.35);}
+    .chip-cancelled{ background: rgba(244,63,94,.18); color:#fb7185; border:1px solid rgba(251,113,133,.35);}
+    .btn{ height:36px; padding:0 14px; border-radius:12px; font-weight:600; font-size:14px; transition: all .15s ease; }
+    .btn-ghost{ background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.18);}
+    .btn-ghost:hover{ background: rgba(255,255,255,0.10);}
+    .btn-primary{ background:#16a34a; } /* emerald-600ish */
+    .btn-primary:hover{ background:#22c55e; }
+    .btn-dark{ background:#0b0b0c; border:1px solid rgba(255,255,255,0.18);}
+    .btn-dark:hover{ background:#141416; }
+    .input{
+      height:40px; border-radius:12px; padding:0 14px; background:rgba(0,0,0,.35);
+      border:1px solid rgba(255,255,255,.18); color:#e5e7eb;
+    }
+    .input::placeholder{ color:rgba(229,231,235,.55); }
+    .table thead th{ font-size:12px; font-weight:700; letter-spacing:.02em; color:#bfc3ca; padding:12px 12px; text-align:left; }
+    .table tbody td{ padding:14px 12px; border-top:1px solid rgba(255,255,255,0.08); }
+    .kbd{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
 </head>
-<body class="min-h-full bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-200">
-  <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
-    <!-- Top bar -->
-    <div class="flex items-center justify-between mb-6">
-      <div>
-        <h1 class="text-2xl font-semibold tracking-tight">Bookings</h1>
-        <p class="text-sm text-neutral-500 dark:text-neutral-400">Admin panel</p>
+<body>
+  <div class="max-w-7xl mx-auto px-5 py-10">
+    <!-- GLASS CARD -->
+    <div class="glass p-6 md:p-8">
+      <!-- Header -->
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="text-2xl font-semibold tracking-tight">Bookings</div>
+          <div class="text-sm text-slate-400 mt-1">Admin panel</div>
+        </div>
+        <div class="flex gap-3">
+          <button id="reloadBtn" class="btn btn-dark">Reload</button>
+          <button id="newBtn" class="btn btn-primary">New booking</button>
+        </div>
       </div>
-      <button id="themeToggle"
-              class="rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 shadow-sm
-                     hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800">
-        <span id="themeLabel">Dark</span> / Light
-      </button>
+
+      <!-- Controls -->
+      <div class="grid md:grid-cols-3 gap-3 mt-6">
+        <div class="subglass p-2">
+          <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">X-Portal-Key</label>
+          <input id="keyInput" class="w-full input" placeholder="paste your portal key" />
+        </div>
+        <div class="subglass p-2">
+          <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">Clinic</label>
+          <input id="clinicInput" class="w-full input" placeholder="default or mathias" />
+        </div>
+        <div class="subglass p-2">
+          <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">Search</label>
+          <input id="searchInput" class="w-full input" placeholder="name, email, phone, code" />
+        </div>
+      </div>
+
+      <!-- Status tabs -->
+      <div class="flex items-center gap-2 mt-4">
+        <button data-status="" class="btn btn-ghost" id="tabAll">All</button>
+        <button data-status="pending" class="btn btn-ghost" id="tabPending">Pending</button>
+        <button data-status="confirmed" class="btn btn-ghost" id="tabConfirmed">Confirmed</button>
+        <button data-status="cancelled" class="btn btn-ghost" id="tabCancelled">Cancelled</button>
+      </div>
+
+      <!-- Table -->
+      <div class="subglass mt-6 overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="table w-full">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Code</th>
+                <th>Namn</th>
+                <th>E-post</th>
+                <th>Telefon</th>
+                <th>Datum</th>
+                <th>Tid</th>
+                <th>Behandling</th>
+                <th>Status</th>
+                <th>Åtgärder</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div id="empty" class="hidden p-10 text-center text-slate-400">
+          Inga bokningar hittades.
+        </div>
+      </div>
     </div>
-
-    <!-- Controls -->
-    <div class="rounded-2xl border border-neutral-200 bg-white p-4 sm:p-5 shadow-sm
-                dark:border-neutral-800 dark:bg-neutral-900 mb-6">
-      <div class="grid sm:grid-cols-12 gap-3">
-        <div class="sm:col-span-4">
-          <label class="block text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-1">X-Portal-Key</label>
-          <input id="keyInput" type="password"
-            class="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 shadow-sm
-                   focus:outline-none focus:ring-2 focus:ring-neutral-900/20
-                   dark:border-neutral-700 dark:bg-neutral-900 dark:focus:ring-white/20"
-            placeholder="paste your portal key" />
-        </div>
-        <div class="sm:col-span-3">
-          <label class="block text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-1">Clinic</label>
-          <input id="clinicInput" type="text"
-            class="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 shadow-sm
-                   focus:outline-none focus:ring-2 focus:ring-neutral-900/20
-                   dark:border-neutral-700 dark:bg-neutral-900 dark:focus:ring-white/20"
-            placeholder="default or mathias" />
-        </div>
-        <div class="sm:col-span-3">
-          <label class="block text-xs font-medium text-neutral-500 dark:text-neutral-400 mb-1">Search</label>
-          <input id="searchInput" type="text"
-            class="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 shadow-sm
-                   focus:outline-none focus:ring-2 focus:ring-neutral-900/20
-                   dark:border-neutral-700 dark:bg-neutral-900 dark:focus:ring-white/20"
-            placeholder="name, email, phone, code" />
-        </div>
-        <div class="sm:col-span-2 flex gap-2 pt-5 sm:pt-0">
-          <!-- Primary (neutral) -->
-          <button id="reloadBtn"
-            class="flex-1 rounded-lg bg-neutral-900 text-white px-3 py-2 shadow-sm hover:bg-black
-                   dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200">Reload</button>
-          <button id="newBtn"
-            class="flex-1 rounded-lg border border-neutral-300 px-3 py-2 shadow-sm hover:bg-neutral-50
-                   dark:border-neutral-700 dark:hover:bg-neutral-800">New</button>
-        </div>
-      </div>
-
-      <!-- tabs + view -->
-      <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
-        <div class="flex items-center gap-2" id="tabs"></div>
-        <div class="flex items-center gap-2">
-          <button id="listBtn" class="rounded-lg px-3 py-1.5 text-sm border border-neutral-300 hover:bg-neutral-50
-                                     dark:border-neutral-700 dark:hover:bg-neutral-800">List</button>
-          <button id="gridBtn" class="rounded-lg px-3 py-1.5 text-sm border border-neutral-300 hover:bg-neutral-50
-                                     dark:border-neutral-700 dark:hover:bg-neutral-800">Grid</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Results -->
-    <div id="results"></div>
   </div>
 
   <!-- New booking modal -->
-  <dialog id="newModal" class="rounded-2xl p-0 w-[min(560px,95vw)] backdrop:bg-black/60">
-    <form method="dialog"
-      class="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm
-             dark:border-neutral-800 dark:bg-neutral-900">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="text-lg font-semibold">New booking</h3>
-        <button class="text-neutral-500 dark:text-neutral-400">&times;</button>
+  <div id="modal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/60"></div>
+    <div class="glass w-full max-w-lg mx-4 p-6 relative">
+      <div class="text-lg font-semibold mb-4">Ny bokning</div>
+      <div class="grid grid-cols-2 gap-3">
+        <input id="m_name" class="input col-span-2" placeholder="Namn" />
+        <input id="m_email" class="input col-span-2" placeholder="E-post (krävs)" />
+        <input id="m_phone" class="input col-span-2" placeholder="Telefon (valfritt)" />
+        <input id="m_date" class="input" type="date" />
+        <input id="m_time" class="input" type="time" />
+        <input id="m_treatment" class="input col-span-2" placeholder="Behandling" />
       </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <input id="nb_name"  class="rounded-lg border border-neutral-300 bg-white px-3 py-2 shadow-sm dark:border-neutral-700 dark:bg-neutral-900" placeholder="Name *" required />
-        <input id="nb_email" class="rounded-lg border border-neutral-300 bg-white px-3 py-2 shadow-sm dark:border-neutral-700 dark:bg-neutral-900" placeholder="Email *" required />
-        <input id="nb_phone" class="rounded-lg border border-neutral-300 bg-white px-3 py-2 shadow-sm dark:border-neutral-700 dark:bg-neutral-900" placeholder="Phone" />
-        <input id="nb_treat" class="rounded-lg border border-neutral-300 bg-white px-3 py-2 shadow-sm dark:border-neutral-700 dark:bg-neutral-900" placeholder="Treatment" />
-        <input id="nb_date"  class="rounded-lg border border-neutral-300 bg-white px-3 py-2 shadow-sm dark:border-neutral-700 dark:bg-neutral-900" placeholder="YYYY-MM-DD *" required />
-        <input id="nb_time"  class="rounded-lg border border-neutral-300 bg-white px-3 py-2 shadow-sm dark:border-neutral-700 dark:bg-neutral-900" placeholder="HH:MM *" required />
+      <div class="flex justify-end gap-2 mt-6">
+        <button id="m_close" class="btn btn-ghost">Avbryt</button>
+        <button id="m_save" class="btn btn-primary">Spara</button>
       </div>
-      <div class="mt-5 flex justify-end gap-2">
-        <button type="button" id="nb_submit"
-          class="rounded-lg bg-neutral-900 text-white px-4 py-2 shadow-sm hover:bg-black
-                 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200">Create</button>
-        <button class="rounded-lg border border-neutral-300 px-4 py-2 shadow-sm hover:bg-neutral-50
-                       dark:border-neutral-700 dark:hover:bg-neutral-800">Close</button>
-      </div>
-      <p id="nb_msg" class="mt-3 text-sm text-neutral-500 dark:text-neutral-400"></p>
-    </form>
-  </dialog>
-
-  <div id="toast" class="fixed bottom-4 left-1/2 -translate-x-1/2 hidden rounded-xl bg-neutral-900 text-white px-4 py-2 text-sm shadow-lg
-                        dark:bg-white dark:text-neutral-900"></div>
+    </div>
+  </div>
 
   <script>
-    // Theme toggle (pure light/dark)
-    const themeToggle = document.getElementById('themeToggle');
-    const themeLabel  = document.getElementById('themeLabel');
-    const savedTheme  = localStorage.getItem('theme') || 'dark';
-    if (savedTheme === 'dark') document.documentElement.classList.add('dark');
-    themeLabel.textContent = document.documentElement.classList.contains('dark') ? 'Dark' : 'Light';
-    themeToggle.addEventListener('click', () => {
-      document.documentElement.classList.toggle('dark');
-      const mode = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-      localStorage.setItem('theme', mode);
-      themeLabel.textContent = mode === 'dark' ? 'Dark' : 'Light';
-    });
+    // ------- tiny helper -------
+    const $ = s => document.querySelector(s);
+    const rowsEl = $("#rows");
+    const emptyEl = $("#empty");
+    const keyInput = $("#keyInput");
+    const clinicInput = $("#clinicInput");
+    const searchInput = $("#searchInput");
 
-    // Elements & state
-    const keyInput    = document.getElementById('keyInput');
-    const clinicInput = document.getElementById('clinicInput');
-    const searchInput = document.getElementById('searchInput');
-    const reloadBtn   = document.getElementById('reloadBtn');
-    const newBtn      = document.getElementById('newBtn');
-    const listBtn     = document.getElementById('listBtn');
-    const gridBtn     = document.getElementById('gridBtn');
-    const results     = document.getElementById('results');
-    const tabsEl      = document.getElementById('tabs');
-    const newModal    = document.getElementById('newModal');
-    const toast       = document.getElementById('toast');
-    const API_BASE    = `${location.origin}/portal/api`;
+    // restore last values
+    keyInput.value = localStorage.getItem("portal_key") || "";
+    clinicInput.value = localStorage.getItem("clinic") || "default";
 
-    let viewMode = localStorage.getItem('viewMode') || 'grid';
-    let tab = localStorage.getItem('tab') || 'all';
-    let data = [];
+    let statusFilter = "";
+    let items = [];
 
-    // Tabs
-    const TABS = [
-      {id:'all', label:'All'},
-      {id:'pending', label:'Pending'},
-      {id:'confirmed', label:'Confirmed'},
-      {id:'cancelled', label:'Cancelled'},
-    ];
-    function renderTabs(){
-      tabsEl.innerHTML = '';
-      TABS.forEach(t=>{
-        const b=document.createElement('button');
-        b.textContent=t.label;
-        b.className=`px-3 py-1.5 rounded-lg text-sm border ${
-          tab===t.id?'border-neutral-900 bg-neutral-900 text-white dark:border-white dark:bg-white dark:text-neutral-900':
-                     'border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800'}`;
-        b.onclick=()=>{tab=t.id;localStorage.setItem('tab',tab);loadBookings();};
-        tabsEl.appendChild(b);
-      });
+    function chip(status){
+      const s = (status || "pending").toLowerCase();
+      const cls = s === "confirmed" ? "chip chip-confirmed"
+                : s === "cancelled" ? "chip chip-cancelled"
+                : "chip chip-pending";
+      return `<span class="${cls}">${s}</span>`;
     }
-    renderTabs();
 
-    // Helpers
-    function showToast(msg){
-      toast.textContent=msg;
-      toast.classList.remove('hidden');
-      setTimeout(()=>toast.classList.add('hidden'),1800);
-    }
-    const pad4 = id => String(id).padStart(4,'0');
-    const codeFor = b => b.appointment_id || pad4(b.id);
-    const pill = s => {
-      const map = {
-        pending  : 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800',
-        confirmed: 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800',
-        cancelled: 'bg-rose-100 text-rose-800 border-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:border-rose-800',
-      };
-      return `<span class="px-2 py-0.5 rounded-full text-xs border ${map[s]||'bg-neutral-100 text-neutral-700 border-neutral-200 dark:bg-neutral-800/40 dark:text-neutral-300 dark:border-neutral-700'}">${s||'—'}</span>`;
-    };
+    function pad4(n){ return String(n).padStart(4, "0"); }
 
-    // Render
     function render(){
-      const q=(searchInput.value||'').toLowerCase();
-      const list=(tab==='all')?data:data.filter(b=>b.status===tab);
-      const filtered=list.filter(b=>{
-        const hay=`${b.name||''}|${b.email||''}|${b.phone||''}|${codeFor(b)}`.toLowerCase();
-        return !q || hay.includes(q);
-      });
-
-      // view buttons state
-      [listBtn,gridBtn].forEach(b=>b.classList.remove('ring','ring-neutral-300','dark:ring-neutral-700'));
-      (viewMode==='list'?listBtn:gridBtn).classList.add('ring','ring-neutral-300','dark:ring-neutral-700');
-
-      if(viewMode==='list'){
-        results.innerHTML = `
-          <div class="rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900 overflow-hidden">
-            <table class="min-w-full text-sm">
-              <thead class="bg-neutral-50 text-neutral-600 dark:bg-neutral-900/60 dark:text-neutral-300">
-                <tr>
-                  <th class="px-4 py-3 text-left">ID</th>
-                  <th class="px-4 py-3 text-left">Code</th>
-                  <th class="px-4 py-3 text-left">Name</th>
-                  <th class="px-4 py-3 text-left">Email</th>
-                  <th class="px-4 py-3 text-left">Phone</th>
-                  <th class="px-4 py-3 text-left">Date</th>
-                  <th class="px-4 py-3 text-left">Time</th>
-                  <th class="px-4 py-3 text-left">Treatment</th>
-                  <th class="px-4 py-3 text-left">Status</th>
-                  <th class="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="tbody" class="divide-y divide-neutral-200 dark:divide-neutral-800"></tbody>
-            </table>
+      const q = (searchInput.value || "").toLowerCase().trim();
+      let list = items;
+      if (q){
+        list = list.filter(r =>
+          (r.name || "").toLowerCase().includes(q) ||
+          (r.email || "").toLowerCase().includes(q) ||
+          (r.phone || "").toLowerCase().includes(q) ||
+          (r.appointment_id || pad4(r.id)).toLowerCase().includes(q)
+        );
+      }
+      rowsEl.innerHTML = list.map(r => {
+        const code = r.appointment_id || pad4(r.id);
+        const act = `
+          <div class="flex gap-2">
+            <button class="btn btn-ghost" onclick="resend(${r.id})">Resend</button>
+            <button class="btn btn-ghost" onclick="setStatus(${r.id}, 'confirmed')">Confirm</button>
+            <button class="btn btn-ghost" onclick="setStatus(${r.id}, 'cancelled')">Cancel</button>
           </div>`;
-        const tb=results.querySelector('#tbody');
-        tb.innerHTML = filtered.map(b=>`
-          <tr class="hover:bg-neutral-50 dark:hover:bg-neutral-800/40">
-            <td class="px-4 py-3 text-neutral-500 dark:text-neutral-400">${b.id}</td>
-            <td class="px-4 py-3 font-mono">${codeFor(b)}</td>
-            <td class="px-4 py-3">${b.name||'—'}</td>
-            <td class="px-4 py-3">${b.email||'—'}</td>
-            <td class="px-4 py-3">${b.phone||'—'}</td>
-            <td class="px-4 py-3">${b.date||'—'}</td>
-            <td class="px-4 py-3">${b.time||'—'}</td>
-            <td class="px-4 py-3">${b.treatment||'—'}</td>
-            <td class="px-4 py-3">${pill(b.status)}</td>
-            <td class="px-4 py-3">
-              <div class="flex justify-end gap-2">
-                <button class="px-2 py-1 rounded border border-neutral-300 hover:bg-neutral-50
-                               dark:border-neutral-700 dark:hover:bg-neutral-800" onclick="resend(${b.id})">Resend</button>
-                <button class="px-2 py-1 rounded border border-neutral-300 hover:bg-neutral-50
-                               dark:border-neutral-700 dark:hover:bg-neutral-800" onclick="setStatus(${b.id},'confirmed')">Confirm</button>
-                <button class="px-2 py-1 rounded border border-neutral-300 hover:bg-neutral-50
-                               dark:border-neutral-700 dark:hover:bg-neutral-800" onclick="setStatus(${b.id},'cancelled')">Cancel</button>
-              </div>
-            </td>
-          </tr>`).join('');
-      } else {
-        results.innerHTML = `
-          <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            ${filtered.map(b=>`
-              <div class="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm
-                          dark:border-neutral-800 dark:bg-neutral-900">
-                <div class="flex items-center justify-between">
-                  <div class="text-xs text-neutral-500 dark:text-neutral-400">#${b.id}</div>
-                  ${pill(b.status)}
-                </div>
-                <div class="mt-1 text-lg font-semibold">${b.name||'—'}</div>
-                <div class="mt-1 text-sm text-neutral-500 dark:text-neutral-400">${b.email||'—'} · ${b.phone||'—'}</div>
-                <div class="mt-3 grid grid-cols-2 gap-2 text-sm">
-                  <div class="rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-800 dark:bg-neutral-900">
-                    <div class="text-xs text-neutral-500 dark:text-neutral-400">Date</div>
-                    <div>${b.date||'—'}</div>
-                  </div>
-                  <div class="rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-800 dark:bg-neutral-900">
-                    <div class="text-xs text-neutral-500 dark:text-neutral-400">Time</div>
-                    <div>${b.time||'—'}</div>
-                  </div>
-                </div>
-                <div class="mt-2 text-sm"><span class="text-neutral-500 dark:text-neutral-400">Treatment:</span> ${b.treatment||'—'}</div>
-                <div class="mt-2 text-sm"><span class="text-neutral-500 dark:text-neutral-400">Code:</span> <span class="font-mono">${codeFor(b)}</span></div>
-                <div class="mt-3 flex gap-2">
-                  <button class="flex-1 rounded-lg border border-neutral-300 px-3 py-2 hover:bg-neutral-50
-                                 dark:border-neutral-700 dark:hover:bg-neutral-800" onclick="resend(${b.id})">Resend</button>
-                  <button class="rounded-lg border border-neutral-300 px-3 py-2 hover:bg-neutral-50
-                                 dark:border-neutral-700 dark:hover:bg-neutral-800" onclick="setStatus(${b.id},'confirmed')">Confirm</button>
-                  <button class="rounded-lg border border-neutral-300 px-3 py-2 hover:bg-neutral-50
-                                 dark:border-neutral-700 dark:hover:bg-neutral-800" onclick="setStatus(${b.id},'cancelled')">Cancel</button>
-                </div>
-              </div>
-            `).join('')}
-          </div>`;
+        return `<tr>
+          <td class="text-slate-300">${r.id}</td>
+          <td class="font-semibold kbd">${code}</td>
+          <td>${r.name || ""}</td>
+          <td>${r.email || ""}</td>
+          <td>${r.phone || ""}</td>
+          <td>${r.date || ""}</td>
+          <td>${r.time || ""}</td>
+          <td>${r.treatment || ""}</td>
+          <td>${chip(r.status)}</td>
+          <td>${act}</td>
+        </tr>`;
+      }).join("");
+
+      emptyEl.classList.toggle("hidden", list.length > 0);
+    }
+
+    async function api(path, options={}){
+      const base = "";
+      const clinic = (clinicInput.value || "default").trim();
+      const key = (keyInput.value || "").trim();
+      if (!key){ alert("Ange X-Portal-Key"); throw new Error("missing key"); }
+      localStorage.setItem("portal_key", key);
+      localStorage.setItem("clinic", clinic);
+
+      const headers = Object.assign({
+        "Content-Type":"application/json",
+        "X-Portal-Key": key
+      }, options.headers || {});
+
+      const url = `${base}${path}${path.includes("?") ? "&" : "?"}clinic=${encodeURIComponent(clinic)}`;
+      const res = await fetch(url, {...options, headers});
+      if (!res.ok){
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status} — ${text}`);
+      }
+      const ct = res.headers.get("content-type") || "";
+      return ct.includes("application/json") ? res.json() : res.text();
+    }
+
+    async function load(){
+      try{
+        const statusQ = statusFilter ? `&status=${encodeURIComponent(statusFilter)}` : "";
+        const data = await api(`/portal/api/bookings?limit=200${statusQ}`);
+        items = data.items || [];
+        render();
+      }catch(e){
+        console.error(e);
+        alert("Kunde inte hämta bokningar: " + e.message);
       }
     }
 
-    // API actions
-    async function loadBookings(){
-      const clinic=(clinicInput.value||'default').trim();
-      const key=(keyInput.value||'').trim();
-      const qs=new URLSearchParams({clinic});
-      if(tab!=='all') qs.set('status',tab);
-      const res=await fetch(`${API_BASE}/bookings?${qs}`,{headers:{'X-Portal-Key':key}});
-      if(!res.ok){showToast(`Load failed: ${res.status}`);return;}
-      const json=await res.json();
-      data=json.items||[];
-      render();
-    }
     async function resend(id){
-      const key=(keyInput.value||'').trim();
-      const res=await fetch(`${API_BASE}/bookings/${id}/resend`,{
-        method:'POST',
-        headers:{'X-Portal-Key':key,'Content-Type':'application/json'},
-        body:JSON.stringify({})
-      });
-      showToast(res.ok?'Resent confirmation':`Resend failed: ${res.status}`);
-    }
-    async function setStatus(id,status){
-      const key=(keyInput.value||'').trim();
-      const res=await fetch(`${API_BASE}/bookings/${id}/status`,{
-        method:'POST',
-        headers:{'X-Portal-Key':key,'Content-Type':'application/json'},
-        body:JSON.stringify({status})
-      });
-      if(res.ok){showToast('Updated');loadBookings();}
-      else showToast(`Update failed: ${res.status}`);
+      try{
+        await api(`/portal/api/bookings/resend`, {
+          method:"POST",
+          body: JSON.stringify({ booking_id: id })
+        });
+        alert("Bekräftelse skickad.");
+      }catch(e){
+        alert("Kunde inte skicka bekräftelse: " + e.message);
+      }
     }
 
-    // New booking
-    document.getElementById('nb_submit').addEventListener('click', async ()=>{
-      const key=(keyInput.value||'').trim();
-      const clinic=(clinicInput.value||'default').trim();
-      const payload={
-        name:document.getElementById('nb_name').value.trim(),
-        email:document.getElementById('nb_email').value.trim(),
-        phone:document.getElementById('nb_phone').value.trim(),
-        treatment:document.getElementById('nb_treat').value.trim(),
-        date:document.getElementById('nb_date').value.trim(),
-        time:document.getElementById('nb_time').value.trim(),
-      };
-      const res=await fetch(`${API_BASE}/bookings/new?clinic=${encodeURIComponent(clinic)}`,{
-        method:'POST',
-        headers:{'X-Portal-Key':key,'Content-Type':'application/json'},
-        body:JSON.stringify(payload)
+    async function setStatus(id, status){
+      try{
+        await api(`/portal/api/bookings/${id}/status`, {
+          method:"POST",
+          body: JSON.stringify({ status })
+        });
+        await load();
+      }catch(e){
+        alert("Kunde inte uppdatera status: " + e.message);
+      }
+    }
+
+    // ----- events -----
+    $("#reloadBtn").addEventListener("click", load);
+    searchInput.addEventListener("input", render);
+
+    for (const btn of [ "#tabAll","#tabPending","#tabConfirmed","#tabCancelled" ]){
+      const el = document.querySelector(btn);
+      el.addEventListener("click", () => {
+        statusFilter = el.dataset.status || "";
+        load();
       });
-      const msg=document.getElementById('nb_msg');
-      if(res.ok){msg.textContent='Created ✓';loadBookings();setTimeout(()=>newModal.close(),600);}
-      else msg.textContent=`Failed: ${res.status}`;
+    }
+
+    // modal
+    const modal = $("#modal");
+    $("#newBtn").addEventListener("click", () => modal.classList.remove("hidden"));
+    $("#m_close").addEventListener("click", () => modal.classList.add("hidden"));
+    $("#m_save").addEventListener("click", async () => {
+      try{
+        const payload = {
+          name: $("#m_name").value.trim(),
+          email: $("#m_email").value.trim(),
+          phone: $("#m_phone").value.trim(),
+          date: $("#m_date").value.trim(),
+          time: $("#m_time").value.trim(),
+          treatment: $("#m_treatment").value.trim()
+        };
+        if (!payload.email){ alert("E-post krävs."); return; }
+        await api(`/portal/api/bookings/new`, {
+          method:"POST",
+          body: JSON.stringify(payload)
+        });
+        modal.classList.add("hidden");
+        // clear
+        for (const id of ["m_name","m_email","m_phone","m_date","m_time","m_treatment"]){ document.getElementById(id).value=""; }
+        await load();
+      }catch(e){
+        alert("Kunde inte skapa bokning: " + e.message);
+      }
     });
 
-    // Wire UI
-    document.getElementById('reloadBtn').addEventListener('click', loadBookings);
-    document.getElementById('newBtn').addEventListener('click', ()=>newModal.showModal());
-    document.getElementById('listBtn').addEventListener('click', ()=>{viewMode='list';localStorage.setItem('viewMode','list');render();});
-    document.getElementById('gridBtn').addEventListener('click', ()=>{viewMode='grid';localStorage.setItem('viewMode','grid');render();});
-    document.getElementById('searchInput').addEventListener('input', render);
-
-    // Boot
-    const urlClinic=new URLSearchParams(location.search).get('clinic');
-    if(urlClinic) clinicInput.value=urlClinic;
-    render();
+    // initial load
+    load();
+    // expose for inline buttons
+    window.resend = resend;
+    window.setStatus = setStatus;
   </script>
 </body>
 </html>
