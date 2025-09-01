@@ -5,84 +5,51 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Bokningar • Admin</title>
 
-  <!-- Tailwind CDN -->
+  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    /* ---------- Background & Glass ---------- */
-    :root{
-      --bg1:#0b0b0c;       /* near-black */
-      --glow1:#fb6a2c;     /* warm orange glow */
-      --glow2:#7c3aed;     /* purple glow */
-    }
-    body{
-      min-height:100vh;
-      background: radial-gradient(1200px 600px at 15% 0%, rgba(251,106,44,0.18), transparent 60%),
-                  radial-gradient(1000px 500px at 85% 12%, rgba(124,58,237,0.16), transparent 60%),
-                  linear-gradient(180deg, #0b0b0c 0%, #0b0b0c 100%);
-      color: #e5e7eb; /* slate-200 */
-    }
-    .glass{
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.20);
-      box-shadow:
-        0 10px 30px rgba(0,0,0,.35),
-        inset 0 1px 0 rgba(255,255,255,.10);
-      backdrop-filter: blur(18px) saturate(160%);
-      -webkit-backdrop-filter: blur(18px) saturate(160%);
-      border-radius: 16px;
-    }
-    .subglass{
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.12);
-      backdrop-filter: blur(12px) saturate(140%);
-      -webkit-backdrop-filter: blur(12px) saturate(140%);
-      border-radius: 12px;
-    }
-    /* ---------- Small UI helpers ---------- */
-    .chip{ padding: 2px 10px; border-radius: 9999px; font-size:12px; line-height: 18px; }
-    .chip-pending{ background: rgba(234,179,8,.18); color:#facc15; border:1px solid rgba(250,204,21,.35);}
-    .chip-confirmed{ background: rgba(16,185,129,.18); color:#34d399; border:1px solid rgba(52,211,153,.35);}
-    .chip-cancelled{ background: rgba(244,63,94,.18); color:#fb7185; border:1px solid rgba(251,113,133,.35);}
-    .btn{ height:36px; padding:0 14px; border-radius:12px; font-weight:600; font-size:14px; transition: all .15s ease; }
-    .btn-ghost{ background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.18);}
-    .btn-ghost:hover{ background: rgba(255,255,255,0.10);}
-    .btn-primary{ background:#60a5fa; color:#0b0b0c; }  /* light blue */
-    .btn-primary:hover{ background:#3b82f6; }
-    .btn-dark{ background:#0b0b0c; border:1px solid rgba(255,255,255,0.18);}
-    .btn-dark:hover{ background:#141416; }
-    .input{
-      height:40px; border-radius:12px; padding:0 14px; background:rgba(0,0,0,.35);
-      border:1px solid rgba(255,255,255,.18); color:#e5e7eb;
-    }
-    .input::placeholder{ color:rgba(229,231,235,.55); }
-    .table thead th{ font-size:12px; font-weight:700; letter-spacing:.02em; color:#bfc3ca; padding:12px 12px; text-align:left; }
-    .table tbody td{ padding:14px 12px; border-top:1px solid rgba(255,255,255,0.08); }
-    .kbd{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    body{background:#0b0b0c;color:#e5e7eb;min-height:100vh}
+    .glass{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.2);
+           backdrop-filter: blur(16px) saturate(140%); border-radius:16px;
+           box-shadow:0 10px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.08)}
+    .subglass{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);
+              backdrop-filter: blur(12px) saturate(130%); border-radius:12px}
+    .input{height:42px;border-radius:12px;padding:0 14px;background:rgba(0,0,0,.35);
+           border:1px solid rgba(255,255,255,.18);color:#e5e7eb}
+    .input::placeholder{color:rgba(229,231,235,.55)}
+    .btn{height:36px;padding:0 14px;border-radius:12px;font-weight:600;font-size:14px}
+    .btn-ghost{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18)}
+    .btn-ghost:hover{background:rgba(255,255,255,.1)}
+    .btn-dark{background:#0b0b0c;border:1px solid rgba(255,255,255,.18)}
+    .btn-dark:hover{background:#131316}
+    .btn-primary{background:#3b82f6}           /* light-ish blue */
+    .btn-primary:hover{background:#60a5fa}
+    .chip{padding:2px 10px;border-radius:9999px;font-size:12px;line-height:18px}
+    .chip-pending{background:rgba(234,179,8,.18);color:#facc15;border:1px solid rgba(250,204,21,.35)}
+    .chip-confirmed{background:rgba(16,185,129,.18);color:#34d399;border:1px solid rgba(52,211,153,.35)}
+    .chip-cancelled{background:rgba(244,63,94,.18);color:#fb7185;border:1px solid rgba(251,113,133,.35)}
+    .tab{height:34px;border-radius:10px;padding:0 12px}
+    .tab-active{background:#111214;border:1px solid rgba(255,255,255,.18)}
+    .kbd{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;}
   </style>
 </head>
-
 <body>
-  <div class="max-w-7xl mx-auto px-5 py-10">
+  <div class="max-w-7xl mx-auto px-5 py-8">
 
-    <!-- ======================= GATE (Portal key only) ======================= -->
-    <div id="gate" class="glass p-8 max-w-xl mx-auto">
-      <div class="text-2xl font-semibold tracking-tight mb-1">Admin-inloggning</div>
-      <div class="text-sm text-slate-400 mb-6">Ange din portalnyckel för att fortsätta.</div>
-      <form id="gateForm" class="grid gap-3">
-        <div class="subglass p-2">
-          <label for="gate_key" class="block text-xs text-slate-400 px-2 pt-1 pb-1">X-Portal-Key</label>
-          <input id="gate_key" class="w-full input" placeholder="klistra in din portalnyckel" autocomplete="off" />
-        </div>
-        <div class="flex justify-end">
-          <button class="btn btn-primary" type="submit">Fortsätt</button>
-        </div>
-      </form>
+    <!-- ===== Gate: enter portal key ===== -->
+    <div id="gate" class="max-w-xl mx-auto mt-16 glass p-6">
+      <h1 class="text-xl font-semibold mb-2">Admin-login</h1>
+      <p class="text-slate-400 mb-4">Ange din portalnyckel för att öppna bokningspanelen.</p>
+      <div class="flex gap-3">
+        <input id="gateKey" class="input w-full" placeholder="X-Portal-Key" />
+        <button id="gateOpen" class="btn btn-primary">Öppna</button>
+      </div>
+      <p id="gateErr" class="text-rose-400 text-sm mt-3 hidden"></p>
     </div>
 
-    <!-- ======================= APP (Dashboard) ======================= -->
+    <!-- ===== Dashboard ===== -->
     <div id="app" class="hidden">
       <div class="glass p-6 md:p-8">
-        <!-- Header -->
         <div class="flex items-center justify-between">
           <div>
             <div class="text-2xl font-semibold tracking-tight">Bookings</div>
@@ -90,50 +57,49 @@
           </div>
           <div class="flex gap-3">
             <button id="reloadBtn" class="btn btn-dark">Reload</button>
-            <button id="newBtn" class="btn btn-primary">New booking</button>
+            <button id="newBtn" class="btn btn-primary">Ny bokning</button>
           </div>
         </div>
 
-        <!-- Controls (search only now) -->
-        <div class="grid md:grid-cols-1 gap-3 mt-6">
+        <!-- Controls -->
+        <div class="grid md:grid-cols-2 gap-3 mt-6">
           <div class="subglass p-2">
-            <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">Search</label>
-            <input id="searchInput" class="w-full input" placeholder="name, email, phone, code" />
+            <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">Sök</label>
+            <input id="searchInput" class="w-full input" placeholder="namn, e-post, telefon, kod" />
           </div>
-        </div>
-
-        <!-- Status tabs -->
-        <div class="flex items-center gap-2 mt-4">
-          <button data-status="" class="btn btn-ghost" id="tabAll">All</button>
-          <button data-status="pending" class="btn btn-ghost" id="tabPending">Pending</button>
-          <button data-status="confirmed" class="btn btn-ghost" id="tabConfirmed">Confirmed</button>
-          <button data-status="cancelled" class="btn btn-ghost" id="tabCancelled">Cancelled</button>
+          <div class="subglass p-2">
+            <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">Status</label>
+            <div class="flex gap-2 px-2 pb-1">
+              <button id="tabAll"        data-status=""          class="tab btn-ghost tab-active">Alla</button>
+              <button id="tabPending"    data-status="pending"   class="tab btn-ghost">Väntande</button>
+              <button id="tabConfirmed"  data-status="confirmed" class="tab btn-ghost">Bekräftade</button>
+              <button id="tabCancelled"  data-status="cancelled" class="tab btn-ghost">Avbokade</button>
+            </div>
+          </div>
         </div>
 
         <!-- Table -->
         <div class="subglass mt-6 overflow-hidden">
           <div class="overflow-x-auto">
-            <table class="table w-full">
+            <table class="w-full">
               <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Code</th>
-                  <th>Namn</th>
-                  <th>E-post</th>
-                  <th>Telefon</th>
-                  <th>Datum</th>
-                  <th>Tid</th>
-                  <th>Behandling</th>
-                  <th>Status</th>
-                  <th>Åtgärder</th>
+                <tr class="text-slate-400 text-xs uppercase">
+                  <th class="text-left p-3">ID</th>
+                  <th class="text-left p-3">Kod</th>
+                  <th class="text-left p-3">Namn</th>
+                  <th class="text-left p-3">E-post</th>
+                  <th class="text-left p-3">Telefon</th>
+                  <th class="text-left p-3">Datum</th>
+                  <th class="text-left p-3">Tid</th>
+                  <th class="text-left p-3">Behandling</th>
+                  <th class="text-left p-3">Status</th>
+                  <th class="text-left p-3">Åtgärder</th>
                 </tr>
               </thead>
               <tbody id="rows"></tbody>
             </table>
           </div>
-          <div id="empty" class="hidden p-10 text-center text-slate-400">
-            Inga bokningar hittades.
-          </div>
+          <div id="empty" class="hidden p-10 text-center text-slate-400">Inga bokningar hittades.</div>
         </div>
       </div>
     </div>
@@ -160,47 +126,25 @@
   </div>
 
   <script>
-    // ------- tiny helper -------
-    const $ = s => document.querySelector(s);
+    // ======= CONFIG =======
+    const CLINIC = "mathias"; // <— change if your clinic is different
 
+    // ======= STATE / DOM =======
+    const $ = s => document.querySelector(s);
+    const appEl = $("#app");
     const gateEl = $("#gate");
-    const appEl  = $("#app");
+    const gateKey = $("#gateKey");
+    const gateOpen = $("#gateOpen");
+    const gateErr  = $("#gateErr");
+
     const rowsEl = $("#rows");
     const emptyEl = $("#empty");
     const searchInput = $("#searchInput");
-
     let statusFilter = "";
     let items = [];
 
-    function showApp() {
-      gateEl.classList.add("hidden");
-      appEl.classList.remove("hidden");
-      load();
-    }
-
-    function showGate() {
-      appEl.classList.add("hidden");
-      gateEl.classList.remove("hidden");
-      const input = $("#gate_key");
-      input.value = "";                    // never auto-fill anything weird
-      input.focus();
-    }
-
-    // Gate submit
-    $("#gateForm").addEventListener("submit", (e) => {
-      e.preventDefault();
-      const key = ($("#gate_key").value || "").trim();
-      if (!key) return;
-      localStorage.setItem("portal_key", key);
-      showApp();
-    });
-
-    // First render decision
-    (function boot(){
-      const key = (localStorage.getItem("portal_key") || "").trim();
-      if (key) showApp(); else showGate();
-    })();
-
+    // ======= HELPERS =======
+    function pad4(n){ return String(n).padStart(4, "0"); }
     function chip(status){
       const s = (status || "pending").toLowerCase();
       const cls = s === "confirmed" ? "chip chip-confirmed"
@@ -209,140 +153,138 @@
       return `<span class="${cls}">${s}</span>`;
     }
 
-    function pad4(n){ return String(n).padStart(4, "0"); }
+    async function api(path, options={}){
+      const key = (localStorage.getItem("portal_key") || "").trim();
+      if (!key) throw new Error("missing portal key");
+      const headers = Object.assign({
+        "Content-Type":"application/json",
+        "X-Portal-Key": key
+      }, options.headers || {});
+      const url = `${path}${path.includes("?") ? "&" : "?"}clinic=${encodeURIComponent(CLINIC)}`;
+      const res = await fetch(url, {...options, headers});
+      const text = await res.text();
+      if (!res.ok) throw new Error(`HTTP ${res.status} — ${text}`);
+      try { return JSON.parse(text); } catch { return text; }
+    }
 
     function render(){
-      const q = (searchInput?.value || "").toLowerCase().trim();
+      const q = (searchInput.value || "").toLowerCase().trim();
       let list = items;
       if (q){
         list = list.filter(r =>
           (r.name || "").toLowerCase().includes(q) ||
           (r.email || "").toLowerCase().includes(q) ||
           (r.phone || "").toLowerCase().includes(q) ||
+          (r.treatment || "").toLowerCase().includes(q) ||
           (r.appointment_id || pad4(r.id)).toLowerCase().includes(q)
         );
       }
       rowsEl.innerHTML = list.map(r => {
         const code = r.appointment_id || pad4(r.id);
-        const act = `
-          <div class="flex gap-2">
-            <button class="btn btn-ghost" onclick="resend(${r.id})">Resend</button>
-            <button class="btn btn-ghost" onclick="setStatus(${r.id}, 'confirmed')">Confirm</button>
-            <button class="btn btn-ghost" onclick="setStatus(${r.id}, 'cancelled')">Cancel</button>
-          </div>`;
-        return `<tr>
-          <td class="text-slate-300">${r.id}</td>
-          <td class="font-semibold kbd">${code}</td>
-          <td>${r.name || ""}</td>
-          <td>${r.email || ""}</td>
-          <td>${r.phone || ""}</td>
-          <td>${r.date || ""}</td>
-          <td>${r.time || ""}</td>
-          <td>${r.treatment || ""}</td>
-          <td>${chip(r.status)}</td>
-          <td>${act}</td>
+        return `<tr class="border-t border-white/10">
+          <td class="p-3 text-slate-300">${r.id}</td>
+          <td class="p-3 font-semibold kbd">${code}</td>
+          <td class="p-3">${r.name || ""}</td>
+          <td class="p-3">${r.email || ""}</td>
+          <td class="p-3">${r.phone || ""}</td>
+          <td class="p-3">${r.date || ""}</td>
+          <td class="p-3">${r.time || ""}</td>
+          <td class="p-3">${r.treatment || ""}</td>
+          <td class="p-3">${chip(r.status)}</td>
+          <td class="p-3">
+            <div class="flex gap-2">
+              <button class="btn btn-ghost" onclick="resend(${r.id})">Resend</button>
+              <button class="btn btn-ghost" onclick="setStatus(${r.id}, 'confirmed')">Confirm</button>
+              <button class="btn btn-ghost" onclick="setStatus(${r.id}, 'cancelled')">Cancel</button>
+            </div>
+          </td>
         </tr>`;
       }).join("");
-
       emptyEl.classList.toggle("hidden", list.length > 0);
     }
 
-    async function api(path, options={}){
-      const key = (localStorage.getItem("portal_key") || "").trim();
-      if (!key){ showGate(); throw new Error("missing key"); }
-
-      const headers = Object.assign({
-        "Content-Type":"application/json",
-        "X-Portal-Key": key
-      }, options.headers || {});
-
-      const url = `${path}`; // no clinic param anymore
-      const res = await fetch(url, {...options, headers});
-      if (!res.ok){
-        const text = await res.text();
-        throw new Error(`HTTP ${res.status} — ${text}`);
-      }
-      const ct = res.headers.get("content-type") || "";
-      return ct.includes("application/json") ? res.json() : res.text();
-    }
-
     async function load(){
-      try{
-        const statusQ = statusFilter ? `&status=${encodeURIComponent(statusFilter)}` : "";
-        const data = await api(`/portal/api/bookings?limit=200${statusQ}`);
-        items = data.items || [];
-        render();
-      }catch(e){
-        console.error(e);
-        alert("Kunde inte hämta bokningar: " + e.message);
-      }
+      const statusQ = statusFilter ? `&status=${encodeURIComponent(statusFilter)}` : "";
+      const data = await api(`/portal/api/bookings?limit=200${statusQ}`);
+      items = data.items || [];
+      render();
     }
 
     async function resend(id){
-      try{
-        await api(`/portal/api/bookings/resend`, {
-          method:"POST",
-          body: JSON.stringify({ booking_id: id })
-        });
-        alert("Bekräftelse skickad.");
-      }catch(e){
-        alert("Kunde inte skicka bekräftelse: " + e.message);
-      }
+      await api(`/portal/api/bookings/resend`, {
+        method: "POST",
+        body: JSON.stringify({ booking_id: id })
+      });
+      alert("Bekräftelse skickad.");
     }
 
     async function setStatus(id, status){
-      try{
-        await api(`/portal/api/bookings/${id}/status`, {
-          method:"POST",
-          body: JSON.stringify({ status })
-        });
-        await load();
-      }catch(e){
-        alert("Kunde inte uppdatera status: " + e.message);
-      }
+      await api(`/portal/api/bookings/${id}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status })
+      });
+      await load();
     }
 
-    // ----- dashboard events -----
-    document.addEventListener("click", (e) => {
-      if (e.target.id === "reloadBtn") load();
-      if (e.target.id === "newBtn")    $("#modal").classList.remove("hidden");
-      if (e.target.id === "m_close")   $("#modal").classList.add("hidden");
-    });
+    // ======= EVENTS =======
+    $("#reloadBtn").addEventListener("click", load);
+    searchInput.addEventListener("input", render);
 
-    searchInput?.addEventListener("input", render);
-
-    for (const id of [ "tabAll","tabPending","tabConfirmed","tabCancelled" ]){
-      document.getElementById(id)?.addEventListener("click", (ev) => {
-        statusFilter = ev.currentTarget.dataset.status || "";
-        load();
+    for (const id of ["tabAll","tabPending","tabConfirmed","tabCancelled"]){
+      const el = document.getElementById(id);
+      el.addEventListener("click", async () => {
+        // toggle active styles
+        document.querySelectorAll(".tab").forEach(t => t.classList.remove("tab-active"));
+        el.classList.add("tab-active");
+        statusFilter = el.dataset.status || "";
+        await load();
       });
     }
 
-    // modal save
+    // modal
+    const modal = $("#modal");
+    $("#newBtn").addEventListener("click", () => modal.classList.remove("hidden"));
+    $("#m_close").addEventListener("click", () => modal.classList.add("hidden"));
     $("#m_save").addEventListener("click", async () => {
-      try{
-        const payload = {
-          name: $("#m_name").value.trim(),
-          email: $("#m_email").value.trim(),
-          phone: $("#m_phone").value.trim(),
-          date: $("#m_date").value.trim(),
-          time: $("#m_time").value.trim(),
-          treatment: $("#m_treatment").value.trim()
-        };
-        if (!payload.email){ alert("E-post krävs."); return; }
-        await api(`/portal/api/bookings/new`, {
-          method:"POST",
-          body: JSON.stringify(payload)
-        });
-        $("#modal").classList.add("hidden");
-        for (const id of ["m_name","m_email","m_phone","m_date","m_time","m_treatment"]){ document.getElementById(id).value=""; }
-        await load();
-      }catch(e){
-        alert("Kunde inte skapa bokning: " + e.message);
-      }
+      const payload = {
+        name: $("#m_name").value.trim(),
+        email: $("#m_email").value.trim(),
+        phone: $("#m_phone").value.trim(),
+        date: $("#m_date").value.trim(),
+        time: $("#m_time").value.trim(),
+        treatment: $("#m_treatment").value.trim(),
+      };
+      if (!payload.email){ alert("E-post krävs."); return; }
+      await api(`/portal/api/bookings/new`, { method:"POST", body: JSON.stringify(payload) });
+      modal.classList.add("hidden");
+      ["m_name","m_email","m_phone","m_date","m_time","m_treatment"].forEach(id=>document.getElementById(id).value="");
+      await load();
     });
 
-    // expose for inline buttons
+    // gate
+    gateOpen.addEventListener("click", async () => {
+      const key = gateKey.value.trim();
+      if (!key){ gateErr.textContent = "Fyll i portalnyckel."; gateErr.classList.remove("hidden"); return; }
+      gateErr.classList.add("hidden");
+      localStorage.setItem("portal_key", key);
+      gateEl.classList.add("hidden");
+      appEl.classList.remove("hidden");
+      try { await load(); } catch(e){ alert("Kunde inte ladda: " + e.message); }
+    });
+
+    // if key already saved, skip gate
+    (function bootstrap(){
+      const saved = (localStorage.getItem("portal_key") || "").trim();
+      if (saved){
+        gateEl.classList.add("hidden");
+        appEl.classList.remove("hidden");
+        load().catch(err => console.error(err));
+      }else{
+        gateEl.classList.remove("hidden");
+      }
+    })();
+
+    // expose
     window.resend = resend;
     window.setStatus = setStatus;
   </script>
