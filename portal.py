@@ -74,7 +74,7 @@ def store_booking(clinic: str, data: dict) -> int:
         return booking_id
 
 def list_bookings(clinic: str, status: str | None = None, limit: int = 100, offset: int = 0):
-    q = "SELECT * FROM bookings WHERE clinic=?"
+    q = "SELECT * FROM bookings WHERE LOWER(clinic)=LOWER(?)"
     args = [clinic]
     if status:
         q += " AND status=?"
@@ -203,17 +203,19 @@ def require_portal_key(req) -> bool:
 def portal_list_bookings():
     if not require_portal_key(request):
         return jsonify({"error": "forbidden"}), 403
-    clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip()
+
+    # normalize to lowercase so UI 'mathias' / 'Mathias' works the same
+    clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip().lower()
     status = request.args.get("status")
+
     try:
         limit = int(request.args.get("limit", "100"))
         offset = int(request.args.get("offset", "0"))
     except ValueError:
         limit, offset = 100, 0
-    return jsonify({
-        "clinic": clinic,
-        "items": list_bookings(clinic, status=status, limit=limit, offset=offset)
-    })
+
+    items = list_bookings(clinic, status=status, limit=limit, offset=offset)
+    return jsonify({"clinic": clinic, "items": items})
 
 @bp.get("/health")
 def health():
@@ -225,7 +227,7 @@ def portal_resend():
         return jsonify({"error": "forbidden"}), 403
 
     data = request.get_json(force=True) or {}
-    clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip()
+    clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip().lower()
 
     # Allow either booking_id (preferred) OR name+date+time
     booking_id = data.get("booking_id") or data.get("id") or data.get("appointment_id")
@@ -247,7 +249,7 @@ def portal_resend():
         with _db() as cx:
             rows = cx.execute("""
                 SELECT * FROM bookings
-                WHERE clinic=? AND LOWER(name)=LOWER(?) AND date=? AND time=?
+                WHERE LOWER(clinic)=LOWER(?) AND LOWER(name)=LOWER(?) AND date=? AND time=?
                 ORDER BY id DESC
             """, (clinic, name, date, time)).fetchall()
             if not rows:
@@ -260,7 +262,6 @@ def portal_resend():
     if not to_email:
         return jsonify({"error": "no_email_on_booking"}), 422
 
-    # Send again (non-blocking)
     _send_confirmation_async(to_email, clinic, b["id"], b)
     return jsonify({"ok": True, "id": b["id"], "email": to_email})
 
@@ -306,7 +307,7 @@ def portal_create_booking():
         return jsonify({"error": "forbidden"}), 403
 
     data = request.get_json(force=True) or {}
-    clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip()
+    clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip().lower()
 
     print(f"[PORTAL] /bookings/new hit. clinic={clinic}")
     print(f"[PORTAL] payload={data}")
@@ -321,11 +322,18 @@ def portal_create_booking():
     if not (data.get("date") and data.get("time")):
         return jsonify({"error": "missing date/time"}), 400
 
-    # Store booking (also persists 4-digit appointment_id)
+    # Store booking
     booking_id = store_booking(clinic, data)
     print(f"[PORTAL] stored booking_id={booking_id}")
 
-    # Non-blocking confirmation email
+    # persist a 4-digit public code
+    code = f"{booking_id:04d}"
+    with _db() as cx:
+        cx.execute("UPDATE bookings SET appointment_id=? WHERE id=?", (code, booking_id))
+        cx.commit()
+    print(f"[PORTAL] appointment_id={code} persisted")
+
+    # queue confirmation email (non-blocking)
     to_email = (data.get("email") or "").strip()
     email_queued = False
     if to_email:
