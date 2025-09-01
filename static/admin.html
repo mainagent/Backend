@@ -46,8 +46,8 @@
     .btn{ height:36px; padding:0 14px; border-radius:12px; font-weight:600; font-size:14px; transition: all .15s ease; }
     .btn-ghost{ background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.18);}
     .btn-ghost:hover{ background: rgba(255,255,255,0.10);}
-    .btn-primary{ background:#16a34a; } /* emerald-600ish */
-    .btn-primary:hover{ background:#22c55e; }
+    .btn-primary{ background:#60a5fa; color:#0b0b0c; }  /* light blue */
+    .btn-primary:hover{ background:#3b82f6; }
     .btn-dark{ background:#0b0b0c; border:1px solid rgba(255,255,255,0.18);}
     .btn-dark:hover{ background:#141416; }
     .input{
@@ -63,67 +63,77 @@
 
 <body>
   <div class="max-w-7xl mx-auto px-5 py-10">
-    <!-- GLASS CARD -->
-    <div class="glass p-6 md:p-8">
-      <!-- Header -->
-      <div class="flex items-center justify-between">
-        <div>
-          <div class="text-2xl font-semibold tracking-tight">Bookings</div>
-          <div class="text-sm text-slate-400 mt-1">Admin panel</div>
-        </div>
-        <div class="flex gap-3">
-          <button id="reloadBtn" class="btn btn-dark">Reload</button>
-          <button id="newBtn" class="btn btn-primary">New booking</button>
-        </div>
-      </div>
 
-      <!-- Controls -->
-      <div class="grid md:grid-cols-3 gap-3 mt-6">
+    <!-- ======================= GATE (Portal key only) ======================= -->
+    <div id="gate" class="glass p-8 max-w-xl mx-auto">
+      <div class="text-2xl font-semibold tracking-tight mb-1">Admin-inloggning</div>
+      <div class="text-sm text-slate-400 mb-6">Ange din portalnyckel för att fortsätta.</div>
+      <form id="gateForm" class="grid gap-3">
         <div class="subglass p-2">
-          <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">X-Portal-Key</label>
-          <input id="keyInput" class="w-full input" placeholder="paste your portal key" />
+          <label for="gate_key" class="block text-xs text-slate-400 px-2 pt-1 pb-1">X-Portal-Key</label>
+          <input id="gate_key" class="w-full input" placeholder="klistra in din portalnyckel" autocomplete="off" />
         </div>
-        <div class="subglass p-2">
-          <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">Clinic</label>
-          <input id="clinicInput" class="w-full input" placeholder="default or mathias" />
+        <div class="flex justify-end">
+          <button class="btn btn-primary" type="submit">Fortsätt</button>
         </div>
-        <div class="subglass p-2">
-          <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">Search</label>
-          <input id="searchInput" class="w-full input" placeholder="name, email, phone, code" />
-        </div>
-      </div>
+      </form>
+    </div>
 
-      <!-- Status tabs -->
-      <div class="flex items-center gap-2 mt-4">
-        <button data-status="" class="btn btn-ghost" id="tabAll">All</button>
-        <button data-status="pending" class="btn btn-ghost" id="tabPending">Pending</button>
-        <button data-status="confirmed" class="btn btn-ghost" id="tabConfirmed">Confirmed</button>
-        <button data-status="cancelled" class="btn btn-ghost" id="tabCancelled">Cancelled</button>
-      </div>
-
-      <!-- Table -->
-      <div class="subglass mt-6 overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="table w-full">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Code</th>
-                <th>Namn</th>
-                <th>E-post</th>
-                <th>Telefon</th>
-                <th>Datum</th>
-                <th>Tid</th>
-                <th>Behandling</th>
-                <th>Status</th>
-                <th>Åtgärder</th>
-              </tr>
-            </thead>
-            <tbody id="rows"></tbody>
-          </table>
+    <!-- ======================= APP (Dashboard) ======================= -->
+    <div id="app" class="hidden">
+      <div class="glass p-6 md:p-8">
+        <!-- Header -->
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-2xl font-semibold tracking-tight">Bookings</div>
+            <div class="text-sm text-slate-400 mt-1">Admin panel</div>
+          </div>
+          <div class="flex gap-3">
+            <button id="reloadBtn" class="btn btn-dark">Reload</button>
+            <button id="newBtn" class="btn btn-primary">New booking</button>
+          </div>
         </div>
-        <div id="empty" class="hidden p-10 text-center text-slate-400">
-          Inga bokningar hittades.
+
+        <!-- Controls (search only now) -->
+        <div class="grid md:grid-cols-1 gap-3 mt-6">
+          <div class="subglass p-2">
+            <label class="block text-xs text-slate-400 px-2 pt-1 pb-1">Search</label>
+            <input id="searchInput" class="w-full input" placeholder="name, email, phone, code" />
+          </div>
+        </div>
+
+        <!-- Status tabs -->
+        <div class="flex items-center gap-2 mt-4">
+          <button data-status="" class="btn btn-ghost" id="tabAll">All</button>
+          <button data-status="pending" class="btn btn-ghost" id="tabPending">Pending</button>
+          <button data-status="confirmed" class="btn btn-ghost" id="tabConfirmed">Confirmed</button>
+          <button data-status="cancelled" class="btn btn-ghost" id="tabCancelled">Cancelled</button>
+        </div>
+
+        <!-- Table -->
+        <div class="subglass mt-6 overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="table w-full">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Code</th>
+                  <th>Namn</th>
+                  <th>E-post</th>
+                  <th>Telefon</th>
+                  <th>Datum</th>
+                  <th>Tid</th>
+                  <th>Behandling</th>
+                  <th>Status</th>
+                  <th>Åtgärder</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+          <div id="empty" class="hidden p-10 text-center text-slate-400">
+            Inga bokningar hittades.
+          </div>
         </div>
       </div>
     </div>
@@ -152,18 +162,44 @@
   <script>
     // ------- tiny helper -------
     const $ = s => document.querySelector(s);
+
+    const gateEl = $("#gate");
+    const appEl  = $("#app");
     const rowsEl = $("#rows");
     const emptyEl = $("#empty");
-    const keyInput = $("#keyInput");
-    const clinicInput = $("#clinicInput");
     const searchInput = $("#searchInput");
-
-    // restore last values
-    keyInput.value = localStorage.getItem("portal_key") || "";
-    clinicInput.value = localStorage.getItem("clinic") || "default";
 
     let statusFilter = "";
     let items = [];
+
+    function showApp() {
+      gateEl.classList.add("hidden");
+      appEl.classList.remove("hidden");
+      load();
+    }
+
+    function showGate() {
+      appEl.classList.add("hidden");
+      gateEl.classList.remove("hidden");
+      const input = $("#gate_key");
+      input.value = "";                    // never auto-fill anything weird
+      input.focus();
+    }
+
+    // Gate submit
+    $("#gateForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const key = ($("#gate_key").value || "").trim();
+      if (!key) return;
+      localStorage.setItem("portal_key", key);
+      showApp();
+    });
+
+    // First render decision
+    (function boot(){
+      const key = (localStorage.getItem("portal_key") || "").trim();
+      if (key) showApp(); else showGate();
+    })();
 
     function chip(status){
       const s = (status || "pending").toLowerCase();
@@ -176,7 +212,7 @@
     function pad4(n){ return String(n).padStart(4, "0"); }
 
     function render(){
-      const q = (searchInput.value || "").toLowerCase().trim();
+      const q = (searchInput?.value || "").toLowerCase().trim();
       let list = items;
       if (q){
         list = list.filter(r =>
@@ -212,19 +248,15 @@
     }
 
     async function api(path, options={}){
-      const base = "";
-      const clinic = (clinicInput.value || "default").trim();
-      const key = (keyInput.value || "").trim();
-      if (!key){ alert("Ange X-Portal-Key"); throw new Error("missing key"); }
-      localStorage.setItem("portal_key", key);
-      localStorage.setItem("clinic", clinic);
+      const key = (localStorage.getItem("portal_key") || "").trim();
+      if (!key){ showGate(); throw new Error("missing key"); }
 
       const headers = Object.assign({
         "Content-Type":"application/json",
         "X-Portal-Key": key
       }, options.headers || {});
 
-      const url = `${base}${path}${path.includes("?") ? "&" : "?"}clinic=${encodeURIComponent(clinic)}`;
+      const url = `${path}`; // no clinic param anymore
       const res = await fetch(url, {...options, headers});
       if (!res.ok){
         const text = await res.text();
@@ -270,22 +302,23 @@
       }
     }
 
-    // ----- events -----
-    $("#reloadBtn").addEventListener("click", load);
-    searchInput.addEventListener("input", render);
+    // ----- dashboard events -----
+    document.addEventListener("click", (e) => {
+      if (e.target.id === "reloadBtn") load();
+      if (e.target.id === "newBtn")    $("#modal").classList.remove("hidden");
+      if (e.target.id === "m_close")   $("#modal").classList.add("hidden");
+    });
 
-    for (const btn of [ "#tabAll","#tabPending","#tabConfirmed","#tabCancelled" ]){
-      const el = document.querySelector(btn);
-      el.addEventListener("click", () => {
-        statusFilter = el.dataset.status || "";
+    searchInput?.addEventListener("input", render);
+
+    for (const id of [ "tabAll","tabPending","tabConfirmed","tabCancelled" ]){
+      document.getElementById(id)?.addEventListener("click", (ev) => {
+        statusFilter = ev.currentTarget.dataset.status || "";
         load();
       });
     }
 
-    // modal
-    const modal = $("#modal");
-    $("#newBtn").addEventListener("click", () => modal.classList.remove("hidden"));
-    $("#m_close").addEventListener("click", () => modal.classList.add("hidden"));
+    // modal save
     $("#m_save").addEventListener("click", async () => {
       try{
         const payload = {
@@ -301,8 +334,7 @@
           method:"POST",
           body: JSON.stringify(payload)
         });
-        modal.classList.add("hidden");
-        // clear
+        $("#modal").classList.add("hidden");
         for (const id of ["m_name","m_email","m_phone","m_date","m_time","m_treatment"]){ document.getElementById(id).value=""; }
         await load();
       }catch(e){
@@ -310,8 +342,6 @@
       }
     });
 
-    // initial load
-    load();
     // expose for inline buttons
     window.resend = resend;
     window.setStatus = setStatus;
