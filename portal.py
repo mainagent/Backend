@@ -12,7 +12,7 @@ bp = Blueprint("portal", __name__)
 PORTAL_API_KEY = os.getenv("PORTAL_API_KEY", "change-me")
 DB_PATH        = os.getenv("BOOKINGS_DB_PATH", "bookings.db")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-REPLY_TO = os.getenv("REPLY_TO", "")
+REPLY_TO       = os.getenv("REPLY_TO", "")
 
 # --- DB helpers ---
 def _db():
@@ -42,13 +42,19 @@ def init_db():
     print("✅ bookings.db ready at", DB_PATH)
 
 def store_booking(clinic: str, data: dict) -> int:
+    """
+    Insert booking and immediately persist a 4-digit appointment_id (e.g. '0007').
+    Returns the new booking id.
+    """
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     with _db() as cx:
         cur = cx.execute("""
-        INSERT INTO bookings (clinic, appointment_id, name, email, phone, date, time, treatment, status, notes, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO bookings (
+                clinic, appointment_id, name, email, phone, date, time, treatment, status, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             clinic,
-            data.get("appointment_id"),
+            data.get("appointment_id"),           # allow override if provided
             data.get("name"),
             data.get("email"),
             data.get("phone"),
@@ -57,10 +63,15 @@ def store_booking(clinic: str, data: dict) -> int:
             data.get("treatment"),
             data.get("status", "pending"),
             data.get("notes"),
-            datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            now,
         ))
+        booking_id = cur.lastrowid
+
+        # Ensure a 4-digit public code is stored
+        code = f"{booking_id:04d}"
+        cx.execute("UPDATE bookings SET appointment_id=? WHERE id=?", (code, booking_id))
         cx.commit()
-        return cur.lastrowid
+        return booking_id
 
 def list_bookings(clinic: str, status: str | None = None, limit: int = 100, offset: int = 0):
     q = "SELECT * FROM bookings WHERE clinic=?"
@@ -156,12 +167,10 @@ def send_email_html(to: str, subject: str, html: str, reply_to: str | None = Non
     print("[EMAIL] no provider succeeded (Resend missing/failed and SMTP missing/failed).")
     return False
 
-# --- ADDED: send confirmation email in background so the HTTP request returns fast ---
+# --- Send confirmation in background ---
 def _send_confirmation_async(to_email: str, clinic: str, booking_id: int, data: dict):
     try:
-
         code = f"{booking_id:04d}"
-
         html = f"""
         <!doctype html><html><body style="font-family:-apple-system, Segoe UI, Roboto, Arial; background:#f8fafc; padding:24px;">
           <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px; margin:auto; background:white; border-radius:12px; box-shadow:0 1px 6px rgba(0,0,0,0.06);">
@@ -312,19 +321,11 @@ def portal_create_booking():
     if not (data.get("date") and data.get("time")):
         return jsonify({"error": "missing date/time"}), 400
 
-    # Store booking
+    # Store booking (also persists 4-digit appointment_id)
     booking_id = store_booking(clinic, data)
     print(f"[PORTAL] stored booking_id={booking_id}")
 
-    code = f"{booking_id:04d}"
-    with _db() as cx:
-        cx.execute(
-            "UPDATE booking SET appointment_id=? WHERE id=?",
-            (code, booking_id)
-        )
-        cx.commit()
-    print(f"[portal] appointment_id={code} persisted")
-
+    # Non-blocking confirmation email
     to_email = (data.get("email") or "").strip()
     email_queued = False
     if to_email:
