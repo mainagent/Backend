@@ -6,6 +6,7 @@ from email.mime.text import MIMEText
 from io import BytesIO
 from dotenv import load_dotenv
 from flask import send_from_directory
+from bankid import bp as bankid_bp
 import base64
 import io
 import os, json
@@ -161,6 +162,10 @@ def generate_short_id(length=4):
 
 from routes.generate_audio import tts_bp
 app.register_blueprint(tts_bp)
+app.register_blueprint(bankid_bp)
+
+print("bankid blueprint registered")
+print(app.url_map)
 
 def transcribe_with_whisper(audio_bytes: bytes, mime: str = "audio/wav") -> str:
     file_like = BytesIO(audio_bytes)
