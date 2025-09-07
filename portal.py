@@ -167,6 +167,25 @@ def send_email_html(to: str, subject: str, html: str, reply_to: str | None = Non
     print("[EMAIL] no provider succeeded (Resend missing/failed and SMTP missing/failed).")
     return False
 
+# --- availability helpers ---
+def _to_minutes(hhmm: str) -> int:
+    h, m = hhmm.split(":"); return int(h)*60 + int(m)
+
+def is_slot_free(clinic: str, date: str, time: str, duration_min: int = 30) -> bool:
+    """True if no overlapping non-cancelled bookings in [time, time+duration)."""
+    start = _to_minutes(time); end = start + duration_min
+    with _db() as cx:
+        rows = cx.execute("""
+            SELECT time, treatment, status FROM bookings
+            WHERE LOWER(clinic)=LOWER(?) AND date=? AND status!='cancelled'
+        """, (clinic, date)).fetchall()
+    for r in rows:
+        s = _to_minutes(r["time"]); e = s + 30  # assume 30-min blocks for existing rows
+        # overlap if start < e and s < end
+        if start < e and s < end:
+            return False
+    return True
+
 # --- Send confirmation in background ---
 def _send_confirmation_async(to_email: str, clinic: str, booking_id: int, data: dict):
     try:
@@ -199,6 +218,60 @@ def require_portal_key(req) -> bool:
     return key and key == PORTAL_API_KEY
 
 # --- Routes ---
+# --- availability helpers ---
+def _to_minutes(hhmm: str) -> int:
+    h, m = hhmm.split(":"); return int(h)*60 + int(m)
+
+def is_slot_free(clinic: str, date: str, time: str, duration_min: int = 30) -> bool:
+    """True if no overlapping non-cancelled bookings in [time, time+duration)."""
+    start = _to_minutes(time); end = start + duration_min
+    with _db() as cx:
+        rows = cx.execute("""
+            SELECT time, treatment, status FROM bookings
+            WHERE LOWER(clinic)=LOWER(?) AND date=? AND status!='cancelled'
+        """, (clinic, date)).fetchall()
+    for r in rows:
+        s = _to_minutes(r["time"]); e = s + 30  # assume 30-min blocks for existing rows
+        # overlap if start < e and s < end
+        if start < e and s < end:
+            return False
+    return True
+def list_free_slots(clinic: str, date: str, open_time="09:00", close_time="17:00",
+                    step_min=30, duration_min=30, limit=8):
+    open_m  = _to_minutes(open_time)
+    close_m = _to_minutes(close_time)
+    slots = []
+    for m in range(open_m, close_m, step_min):
+        hh = f"{m//60:02d}:{m%60:02d}"
+        if is_slot_free(clinic, date, hh, duration_min):
+            slots.append(hh)
+            if len(slots) >= limit:
+                break
+    return slots
+
+@bp.route("/portal/api/availability/check", methods=["GET"])
+def availability_check():
+    clinic = (request.args.get("clinic") or os.getenv("CLINIC","default")).strip().lower()
+    date   = request.args.get("date") or ""
+    time   = request.args.get("time") or ""
+    dur    = int(request.args.get("duration") or 30)
+    if not (date and time):
+        return jsonify({"ok": False, "error":"missing date/time"}), 400
+    free = is_slot_free(clinic, date, time, dur)
+    return jsonify({"ok": True, "free": free, "clinic": clinic, "date": date, "time": time, "duration": dur})
+
+@bp.route("/portal/api/availability/suggest", methods=["GET"])
+def availability_suggest():
+    clinic = (request.args.get("clinic") or os.getenv("CLINIC","default")).strip().lower()
+    date   = request.args.get("date") or ""
+    treat  = (request.args.get("treatment") or "").strip().lower()
+    # basic duration mapping per treatment (adjust to your clinic)
+    dur_map = {"undersökning": 30, "akut": 30, "hygienist": 45, "blekning": 60}
+    duration = dur_map.get(treat, 30)
+    # optionally specialist mapping later (see below)
+    slots = list_free_slots(clinic, date, duration_min=duration, limit=8)
+    return jsonify({"ok": True, "clinic": clinic, "date": date, "treatment": treat, "duration": duration, "slots": slots})
+
 @bp.get("/portal/api/bookings")
 def portal_list_bookings():
     if not require_portal_key(request):
@@ -322,6 +395,8 @@ def portal_create_booking():
     if not (data.get("date") and data.get("time")):
         return jsonify({"error": "missing date/time"}), 400
 
+    if not is_slot_free(clinic, data["date"], data["time"], 30):
+        return jsonify({"ok": False, "error": "slot_taken"}), 409
     # Store booking
     booking_id = store_booking(clinic, data)
     print(f"[PORTAL] stored booking_id={booking_id}")
