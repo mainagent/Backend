@@ -7,6 +7,7 @@ from io import BytesIO
 from dotenv import load_dotenv
 from flask import send_from_directory
 from bankid import bp as bankid_bp
+from utils_cleanup import normalize_spelled_email, validate_email
 import base64
 import io
 import os, json
@@ -77,76 +78,6 @@ def _compose_event(data: dict):
         "attendees": attendees,
     }
 
-def repair_text_with_gpt(text: str, lang: str = "sv-SE") -> str:
-    system_prompt = (
-        "Du är ett transkript-reparationsfilter för svenska/engelska. "
-        "Korrigera fel från tal-till-text utan att ändra betydelsen.\n"
-        "Regler:\n"
-        "1) Korrigera uppenbara stavfel via kontext (t.ex. 'buka'->'boka', 'imorlon'->'imorgon').\n"
-        "2) Siffror: skriv som siffror. Telefonnummer skrivs utan mellanslag (t.ex. 'noll sju tre...' -> '073...').\n"
-        "3) E-post: ersätt ' at ' och 'snabela' med '@'; ' dot '/'punkt'/'prick' med '.'; ta bort mellanslag runt '@' och '.'.\n"
-        "   Vanliga domäner: '.kom' -> '.com'.\n"
-        "4) Tider: '10 00' -> '10:00'.\n"
-        "5) Lägg inte till information. Behåll språket och innebörd. Returnera endast den korrigerade texten."
-    )
-    resp = client_oa.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
-        ],
-        temperature=0.0,
-    )
-    return (resp.choices[0].message.content or "").strip()
-
-_SW_TO_SYMBOL = {
-    " snabela ": " @ ",
-    " at ": " @ ",
-    " punkt ": " . ",
-    " dot ": " . ",
-    " prick ": " . ",
-}
-_WORD_TO_DIGIT = {
-    "noll":"0","zero":"0",
-    "ett":"1","en":"1","one":"1",
-    "två":"2","tva":"2","two":"2",
-    "tre":"3","three":"3",
-    "fyra":"4","four":"4",
-    "fem":"5","five":"5",
-    "sex":"6","six":"6",
-    "sju":"7","seven":"7",
-    "åtta":"8","atta":"8","eight":"8",
-    "nio":"9","nine":"9",
-}
-def normalize_contacts(s: str) -> str:
-    t = f" {s} "
-    low = t.lower()
-    for k, v in _SW_TO_SYMBOL.items():
-        low = low.replace(k, v)
-    low = re.sub(r"\s*@\s*", "@", low)
-    low = re.sub(r"\s*\.\s*", ".", low)
-    low = re.sub(r"\.kom\b", ".com", low)
-
-    tokens = low.split()
-    out = []
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if tok in _WORD_TO_DIGIT or re.fullmatch(r"\d", tok):
-            digits = []
-            while i < len(tokens) and (tokens[i] in _WORD_TO_DIGIT or re.fullmatch(r"\d", tokens[i])):
-                digits.append(_WORD_TO_DIGIT.get(tokens[i], tokens[i]))
-                i += 1
-            if len(digits) >= 6:
-                out.append("".join(digits))
-            else:
-                out.extend(digits)
-        else:
-            out.append(tok)
-            i += 1
-    low = " ".join(out)
-    low = re.sub(r"\b(\d{1,2})[ ](\d{2})\b", r"\1:\2", low)
-    return low.strip()
 
 app = Flask(__name__)
 
@@ -447,6 +378,36 @@ def create_booking_via_portal(payload: dict) -> tuple[bool, str]:
         return False, f"portal exception: {e}"
 # ================================================
 
+def repair_text_with_gpt(text: str, lang: str = "sv-SE") -> str:
+    """
+    Light transcript repair for Swedish/English:
+    - fix obvious ASR spelling from context
+    - numbers as digits; phone numbers without spaces
+    - email: 'snabel-a'/'at' -> '@', 'punkt'/'dot'/'prick' -> '.', remove spaces around @/.
+    - 'kom' -> 'com', times '10 00' -> '10:00'
+    Returns ONLY the corrected text.
+    """
+    system_prompt = (
+        "Du är ett transkript-reparationsfilter för svenska/engelska. "
+        "Korrigera fel från tal-till-text utan att ändra betydelsen.\n"
+        "Regler:\n"
+        "1) Korrigera uppenbara stavfel via kontext (t.ex. 'buka'->'boka', 'imorlon'->'imorgon').\n"
+        "2) Siffror: skriv som siffror. Telefonnummer utan mellanslag (t.ex. 'noll sju tre' -> '073').\n"
+        "3) E-post: ersätt ' at ' och 'snabela/snabel-a' med '@'; ' dot/punkt/prick ' med '.'; "
+        "   ta bort mellanslag runt '@' och '.'. Vanliga domäner: '.kom' -> '.com'.\n"
+        "4) Tider: '10 00' -> '10:00'.\n"
+        "5) Lägg inte till information. Behåll språk och innebörd. Returnera endast den korrigerade texten."
+    )
+    resp = client_oa.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ],
+        temperature=0.0,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
 @app.post("/process_input")
 def process_input():
     data = request.get_json() or {}
@@ -469,7 +430,8 @@ def process_input():
         print(f"[GPT] result='{corrected_text}'")
     except Exception as e:
         print(f"[WARN] GPT repair failed: {e}")
-    corrected_text = normalize_contacts(corrected_text)
+
+    corrected_text = normalize_spelled_email(corrected_text)
     print(f"[NORM] after normalize='{corrected_text}'")
 
     booking = parse_booking(corrected_text)
