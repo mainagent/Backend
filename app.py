@@ -192,30 +192,6 @@ def send_email_helper(to, subject, body):
 # ---------------- BOOK APPOINTMENT ----------------
 # (HTML email helper moved to portal.py; import it below.)
 
-@app.route("/book", methods=["POST"])
-def book():
-    try:
-        data = request.get_json(force=True) or {}
-        for f in ("name", "date", "time"):
-            if not data.get(f):
-                return jsonify({"status": "error", "error": f"Missing field: {f}"}), 400
-        service = _get_gcal_service()
-        event = _compose_event(data)
-        created = service.events().insert(calendarId="primary", body=event, sendUpdates="all").execute()
-        appt_id = _make_short_id()
-        return jsonify({
-            "status": "success",
-            "method": "google_calendar",
-            "appointment_id": appt_id,
-            "patient_name": data.get("name",""),
-            "date": data.get("date",""),
-            "time": data.get("time",""),
-            "calendar_event_id": created.get("id"),
-            "htmlLink": created.get("htmlLink"),
-        }), 200
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
-
 @app.route("/resend_confirmation", methods=["POST"])
 def resend_confirmation():
     # uses send_email_html imported from portal
@@ -433,22 +409,6 @@ def process_input():
 
     corrected_text = normalize_spelled_email(corrected_text)
     print(f"[NORM] after normalize='{corrected_text}'")
-
-    booking = parse_booking(corrected_text)
-    if booking:
-        ok, info = create_booking_via_portal(booking)
-        if ok:
-            reply = (
-                f"Toppen! Jag bokade in en tid för {booking['date']} klockan {booking['time']} "
-                f"hos {CLINIC.capitalize()}. Bokningsnummer {info}. Behöver du något mer?"
-            )
-        else:
-            reply = (
-                "Jag försökte boka men något gick fel. "
-                "Vill du att jag försöker igen eller vill du ge ett annat datum och tid?"
-            )
-        print(f"[BOOK] {('ok id='+info) if ok else info}")
-        return jsonify({"response": reply, "end_turn": is_final})
 
     reply = f"Jag hörde: {corrected_text}"
     print(f"[OUT] reply='{reply}'")
