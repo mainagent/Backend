@@ -18,6 +18,9 @@ import datetime as dt
 import re
 import hmac, hashlib
 import requests
+from flask import request, Response
+from urllib.parse import quote_plus
+from twilio.twiml.voice_response import VoiceResponse
 
 # --- Google Calendar imports ---
 from google.oauth2.credentials import Credentials
@@ -28,6 +31,7 @@ load_dotenv()
 load_dotenv(override=True)
 XI_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_WEBHOOK_SECRET = os.getenv("ELEVENLABS_WEBHOOK_SECRET", "")
+ELEVEN_AGENT_ID = os.getenv("ELEVEN_AGENT_ID", "")
 
 # >>> NEW: portal/env for bookings + clinic tag
 PORTAL_BASE = os.getenv("PORTAL_BASE", "http://127.0.0.1:5000")
@@ -416,6 +420,54 @@ def process_input():
 
 from portal import init_portal  # send_email_html is imported lazily where needed
 init_portal(app)
+
+
+@app.post("/twilio/voice")
+def twilio_voice():
+    """
+    Twilio hits this when someone calls your number.
+    We return TwiML that tells Twilio to open a Media Stream
+    directly to ElevenLabs ConvAI Realtime.
+    """
+    if not XI_API_KEY or not ELEVEN_AGENT_ID:
+        # Fail safe: say a message instead of streaming if env is missing
+        vr = VoiceResponse()
+        vr.say("Tyvärr, tjänsten är inte tillgänglig just nu.", language="sv-SE")
+        return Response(str(vr), mimetype="text/xml")
+
+    caller = request.values.get("From", "")
+    # ElevenLabs accepts params on the WS URL (Twilio can't send custom headers)
+    # encoding=mulaw & sample_rate=8000 match Twilio stream defaults
+    # vendor=twilio hints to ElevenLabs how to parse the stream
+    stream_url = (
+        "wss://api.elevenlabs.io/v1/convai/stream"
+        f"?agent_id={quote_plus(ELEVEN_AGENT_ID)}"
+        f"&xi-api-key={quote_plus(XI_API_KEY)}"
+        f"&encoding=mulaw&sample_rate=8000&vendor=twilio"
+        f"&user={quote_plus(caller)}"
+    )
+
+    vr = VoiceResponse()
+    # short cue so callers don't get dead air (optional)
+    vr.say("Kopplar dig till assistenten, ett ögonblick.", language="sv-SE")
+
+    # <Start><Stream> opens the bidirectional audio stream
+    start = vr.start()
+    start.stream(url=stream_url, name="elevenlabs")
+
+    # keep the call open while the stream is active
+    return Response(str(vr), mimetype="text/xml")
+
+
+@app.post("/twilio/status")
+def twilio_status():
+    """
+    Optional: Twilio will POST call lifecycle events here if you set
+    'Call status changes' in the number config.
+    """
+    data = request.values.to_dict()
+    print("[Twilio Status]", data)
+    return ("", 204)
 
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5000))

@@ -8,3 +8,4 @@ google-auth-oauthlib==1.2.1
 gunicorn==22.0.0
 elevenlabs==1.2.0
 httpx==0.26.0
+twilio==9.8.0
