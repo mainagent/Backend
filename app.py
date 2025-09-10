@@ -20,7 +20,7 @@ import hmac, hashlib
 import requests
 from flask import request, Response
 from urllib.parse import quote_plus
-from twilio.twiml.voice_response import VoiceResponse
+from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
 
 # --- Google Calendar imports ---
 from google.oauth2.credentials import Credentials
@@ -427,49 +427,49 @@ init_portal(app)
 
 @app.post("/twilio/voice")
 def twilio_voice():
+    """Twilio calls this when someone dials your number.
+    We return TwiML that tells Twilio to open a WebSocket stream
+    directly to ElevenLabs ConvAI so your agent can talk in real time.
     """
-    Twilio hits this when someone calls your number.
-    We return TwiML that tells Twilio to open a Media Stream
-    directly to ElevenLabs ConvAI Realtime.
-    """
-    if not XI_API_KEY or not ELEVEN_AGENT_ID:
-        # Fail safe: say a message instead of streaming if env is missing
-        vr = VoiceResponse()
-        vr.say("Tyvärr, tjänsten är inte tillgänglig just nu.", language="sv-SE")
-        return Response(str(vr), mimetype="text/xml")
+    resp = VoiceResponse()
 
-    caller = request.values.get("From", "")
-    # ElevenLabs accepts params on the WS URL (Twilio can't send custom headers)
-    # encoding=mulaw & sample_rate=8000 match Twilio stream defaults
-    # vendor=twilio hints to ElevenLabs how to parse the stream
-    stream_url = (
-        "wss://api.elevenlabs.io/v1/convai/stream"
-        f"?agent_id={quote_plus(ELEVEN_AGENT_ID)}"
-        f"&xi-api-key={quote_plus(XI_API_KEY)}"
-        f"&encoding=mulaw&sample_rate=8000&vendor=twilio"
-        f"&user={quote_plus(caller)}"
-    )
+    # Small greeting while the stream spins up (optional)
+    resp.say("Kopplar dig till assistenten, ett ögonblick.", language="sv-SE")
 
-    vr = VoiceResponse()
-    # short cue so callers don't get dead air (optional)
-    vr.say("Kopplar dig till assistenten, ett ögonblick.", language="sv-SE")
+    connect = Connect()
+    stream = Stream(url="wss://api.elevenlabs.io/v1/convai/stream")
 
-    # <Start><Stream> opens the bidirectional audio stream
-    start = vr.start()
-    start.stream(url=stream_url, name="elevenlabs")
+    # Required auth + agent info for ElevenLabs
+    stream.parameter(name="agent_id", value=ELEVEN_AGENT_ID)
+    stream.parameter(name="xi_api_key", value=XI_API_KEY)
 
-    # keep the call open while the stream is active
-    return Response(str(vr), mimetype="text/xml")
+    # (Optional) tag the call with caller's number
+    from_number = request.form.get("From", "")
+    if from_number:
+        stream.parameter(name="caller_id", value=from_number)
+
+    connect.append(stream)
+    resp.append(connect)
+
+    return str(resp), 200, {"Content-Type": "text/xml"}
 
 
 @app.post("/twilio/status")
 def twilio_status():
     """
-    Optional: Twilio will POST call lifecycle events here if you set
-    'Call status changes' in the number config.
+    Receives Twilio call lifecycle webhooks (queued, ringing, in-progress, completed, busy, failed…).
+    Make sure your Twilio number > Voice > "Call status changes" is set to POST this URL.
     """
-    data = request.values.to_dict()
-    print("[Twilio Status]", data)
+    f = request.form  # MultiDict
+    log = {
+        "event": f.get("CallStatus"),     # queued | ringing | in-progress | completed | no-answer | busy | failed | canceled
+        "sid":   f.get("CallSid"),
+        "from":  f.get("From"),
+        "to":    f.get("To"),
+        "dur":   f.get("CallDuration"),    # only present on completed
+        "reason": f.get("SipResponseCode") or f.get("AnsweredBy") or f.get("ErrorCode")
+    }
+    print("[Twilio Status]", log)
     return ("", 204)
 
 if __name__ == "__main__":
