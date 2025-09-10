@@ -32,6 +32,9 @@ load_dotenv(override=True)
 XI_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_WEBHOOK_SECRET = os.getenv("ELEVENLABS_WEBHOOK_SECRET", "")
 ELEVEN_AGENT_ID = os.getenv("ELEVEN_AGENT_ID", "")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 
 # >>> NEW: portal/env for bookings + clinic tag
 PORTAL_BASE = os.getenv("PORTAL_BASE", "http://127.0.0.1:5000")
