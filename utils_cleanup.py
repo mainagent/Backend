@@ -1,5 +1,5 @@
 # utils_cleanup.py
-import re
+import re, datetime as dt
 
 # --- Rule groups ---
 
@@ -100,3 +100,52 @@ def normalize_spelled_email(text: str) -> str:
 
 def validate_email(s: str) -> bool:
     return bool(EMAIL_REGEX.match(s or ""))
+
+WD = {"mån":0,"tis":1,"ons":2,"tors":3,"fre":4,"lör":5,"sön":6}
+
+def parse_sv_date_time(t: str, base: dt.date|None=None) -> tuple[str|None,str|None]:
+    t0 = (t or "").lower().strip()
+    base = base or dt.date.today()
+
+# ----- DATE -----
+    date = None
+    if "idag" in t0: date = base
+    elif "imorgon" in t0: date = base + dt.timedelta(days=1)
+    elif "i övermorgon" in t0 or "i över morgon" in t0: date = base + dt.timedelta(days=2)
+    elif "nästa " in t0:
+        m = re.search(r"nästa\s+(mån|tis|ons|tors|fre|lör|sön)", t0)
+        if m:
+            target = WD[m.group(1)]
+            delta = (target - base.weekday() + 7) % 7
+            delta = 7 if delta == 0 else delta
+            date = base + dt.timedelta(days=delta)
+    else:
+        m = re.search(r"(20\d{2})-(\d{2})-(\d{2})", t0)
+        if m:
+            date = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+# ----- TIME -----
+    time_ = None
+    m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", t0)
+    if m:
+        time_ = f"{int(m.group(1)):02d}:{m.group(2)}"
+    else:
+        m = re.search(r"(halv|kvart över|kvart i)\s*(\d{1,2})", t0)
+        if m:
+            h = int(m.group(2)) % 24
+            if m.group(1) == "halv": # halv tre = 2:30
+                h = (h - 1) % 24
+                time_ = f"{h:02d}:30"
+            elif m.group(1) == "kvart över":
+                time_ = f"{h:02d}:15"
+            elif m.group(1) == "kvart i":
+                h = (h - 1) % 24
+                time_ = f"{h:02d}:45"
+        elif "lunchtid" in t0 or "vid lunch" in t0:
+            time_ = "12:00"
+        elif "förmiddag" in t0 and not time_:
+            time_ = "10:00"
+        elif "eftermiddag" in t0 and not time_:
+            time_ = "15:00"
+
+    return (date.isoformat() if date else None, time_)

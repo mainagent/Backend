@@ -1,13 +1,12 @@
 from __future__ import annotations
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from resend_notification import handle_resend_notification
 from elevenlabs.client import ElevenLabs
 from email.mime.text import MIMEText
 from io import BytesIO
 from dotenv import load_dotenv
-from flask import send_from_directory
 from bankid import bp as bankid_bp
-from utils_cleanup import normalize_spelled_email, validate_email
+from utils_cleanup import normalize_spelled_email, parse_sv_date_time, validate_email
 import base64
 import io
 import os, json
@@ -16,11 +15,10 @@ import random
 import string
 import datetime as dt
 import re
-import hmac, hashlib
+import hmac, hashlib, time
 import requests
-from flask import request, Response
+from flask import Response
 from urllib.parse import quote_plus
-from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
 
 # --- Google Calendar imports ---
 from google.oauth2.credentials import Credentials
@@ -32,11 +30,8 @@ load_dotenv(override=True)
 XI_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_WEBHOOK_SECRET = os.getenv("ELEVENLABS_WEBHOOK_SECRET", "")
 ELEVEN_AGENT_ID = os.getenv("ELEVEN_AGENT_ID", "")
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 
-# >>> NEW: portal/env for bookings + clinic tag
+# >>> portal/env for bookings + clinic tag
 PORTAL_BASE = os.getenv("PORTAL_BASE", "http://127.0.0.1:5000")
 PORTAL_KEY  = os.getenv("PORTAL_API_KEY", "")
 CLINIC      = os.getenv("CLINIC", "mathias")
@@ -45,6 +40,49 @@ from openai import OpenAI
 client_oa = OpenAI()
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+
+# -------------------- SESSION & BOOKING GATES --------------------
+# One unified session store (per conversation/call)
+SESSION = {}  # {conversation_id: {"slots": {...}, "verified": False, "last_tool": None, "created_booking": False}}
+
+def session_reset(cid: str):
+    SESSION[cid] = {"slots": {}, "verified": False, "last_tool": None, "created_booking": False}
+
+def session_end(cid: str):
+    SESSION.pop(cid, None)
+
+REQUIRED_SLOTS = ("name","email","date","time","treatment")
+
+def set_slot(cid: str, key: str, value: str):
+    SESSION.setdefault(cid, {"slots": {}, "verified": False, "last_tool": None, "created_booking": False})
+    if value is not None and value != "":
+        SESSION[cid]["slots"][key] = value
+
+def slots_ready(cid: str) -> bool:
+    s = SESSION.get(cid, {}).get("slots", {})
+    return all(s.get(k) for k in REQUIRED_SLOTS)
+
+def booking_allowed(cid: str) -> bool:
+    s = SESSION.get(cid, {})
+    return (s.get("verified") is True) and (s.get("created_booking") is not True) and slots_ready(cid)
+
+# idempotency (avoid dupes if the LLM retries)
+LAST_BOOK = {}  # {hash_key: timestamp}
+
+def _idem_key(s: dict) -> str:
+    base = f"{s.get('name','')}|{s.get('email','')}|{s.get('date','')}|{s.get('time','')}|{s.get('treatment','')}"
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+def safe_create_booking(payload: dict) -> tuple[bool, str]:
+    k = _idem_key(payload)
+    now = time.time()
+    if k in LAST_BOOK and now - LAST_BOOK[k] < 60:  # 60s guard window
+        return False, "duplicate_attempt"
+    ok, info = create_booking_via_portal(payload)
+    if ok:
+        LAST_BOOK[k] = now
+    return ok, info
+# ----------------------------------------------------------------
 
 def _make_short_id(k=4):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=k))
@@ -85,10 +123,9 @@ def _compose_event(data: dict):
         "attendees": attendees,
     }
 
-
 app = Flask(__name__)
 
-# Temporary in-memory "database"
+# Temporary in-memory "database" (kept)
 appointments = {}
 
 def generate_short_id(length=4):
@@ -149,11 +186,23 @@ def elevenlabs_webhook():
     try:
         evt = request.get_json(force=True)
     except Exception as e:
-        print(f"[11L] JSON parse error: {e} raw[:200]={raw[:200]!r}")
+        print(f"[11L] JSON parse error: {e}")
         return ("bad json", 400)
 
-    etype = evt.get("type")
-    print(f"[11L] event type={etype} keys={list(evt.keys())[:10]}")
+    etype = (evt.get("type") or "").strip()
+    conv_id = (evt.get("conversation_id") or evt.get("conversationId") or "").strip()
+
+    print(f"[11L] event type={etype} conv_id={conv_id}")
+
+    if etype in ("conversation_started", "call_started"):
+        if conv_id:
+            session_reset(conv_id)
+            print(f"[SESSION] reset -> {conv_id}")
+    elif etype in ("conversation_ended", "call_ended"):
+        if conv_id:
+            session_end(conv_id)
+            print(f"[SESSION] end -> {conv_id}")
+
     return jsonify(ok=True)
 
 @app.route("/ping")
@@ -196,12 +245,9 @@ def send_email_helper(to, subject, body):
         server.login(os.getenv("EMAIL_USER"), os.getenv("EMAIL_PASS"))
         server.sendmail(os.getenv("EMAIL_USER"), [to], msg.as_string())
 
-# ---------------- BOOK APPOINTMENT ----------------
-# (HTML email helper moved to portal.py; import it below.)
-
+# ---------------- RESEND CONFIRMATION (kept) ----------------
 @app.route("/resend_confirmation", methods=["POST"])
 def resend_confirmation():
-    # uses send_email_html imported from portal
     data = request.get_json() or {}
     appointment_id = (data.get("appointment_id") or "").strip().upper()
     appt = None
@@ -215,8 +261,8 @@ def resend_confirmation():
     if not appt:
         name = (data.get("name") or "").strip().lower()
         date = (data.get("date") or "").strip()
-        time = (data.get("time") or "").strip()
-        if not (name and date and time):
+        time_s = (data.get("time") or "").strip()
+        if not (name and date and time_s):
             return jsonify({
                 "error": "Provide either a valid appointment_id OR name+date+time"
             }), 400
@@ -224,7 +270,7 @@ def resend_confirmation():
             (aid, a) for aid, a in appointments.items()
             if a.get("name","").strip().lower() == name
             and a.get("date","").strip() == date
-            and a.get("time","").strip() == time
+            and a.get("time","").strip() == time_s
         ]
         if not matches:
             return jsonify({"error": "No matching appointment found"}), 404
@@ -255,7 +301,7 @@ def resend_confirmation():
       </body>
     </html>
     """
-    from portal import send_email_html  # import here to avoid circulars on startup
+    from portal import send_email_html  # avoid circular on startup
     send_email_html(
         to=appt["email"],
         subject="Din tandläkartid (påminnelse)",
@@ -317,30 +363,9 @@ def provide_est_delivery_window():
         "status": "Delivery window provided"
     })
 
-# ====== NEW: booking intent + portal client ======
+# ====== portal client ======
 DATE_RE = r"(20\d{2}-\d{2}-\d{2})"
 TIME_RE = r"\b([01]?\d|2[0-3]):([0-5]\d)\b"
-
-def parse_booking(text: str) -> dict | None:
-    t = text.strip().lower()
-    if not any(k in t for k in ["book", "boka", "appointment", "tid"]):
-        return None
-    d = re.search(DATE_RE, t)
-    tm = re.search(TIME_RE, t)
-    if not (d and tm):
-        return None
-    name = None
-    m = re.search(r"(my name is|jag heter)\s+([a-zåäöé\- ]{2,})", t)
-    if m: name = m.group(2).title().strip()
-    return {
-        "clinic": CLINIC,
-        "name": name or "Okänd",
-        "email": None,
-        "phone": None,
-        "date": d.group(1),
-        "time": f"{tm.group(1)}:{tm.group(2)}",
-        "treatment": None,
-    }
 
 def create_booking_via_portal(payload: dict) -> tuple[bool, str]:
     try:
@@ -352,34 +377,28 @@ def create_booking_via_portal(payload: dict) -> tuple[bool, str]:
             },
             params={"clinic": payload.get("clinic", CLINIC)},
             json=payload,
-            timeout=10,
+            timeout=12,
         )
         if r.status_code == 200 and (r.json() or {}).get("ok"):
             return True, str((r.json() or {}).get("id"))
         return False, f"portal error {r.status_code}: {r.text[:200]}"
     except Exception as e:
         return False, f"portal exception: {e}"
-# ================================================
 
 def repair_text_with_gpt(text: str, lang: str = "sv-SE") -> str:
     """
-    Light transcript repair for Swedish/English:
-    - fix obvious ASR spelling from context
-    - numbers as digits; phone numbers without spaces
-    - email: 'snabel-a'/'at' -> '@', 'punkt'/'dot'/'prick' -> '.', remove spaces around @/.
-    - 'kom' -> 'com', times '10 00' -> '10:00'
+    Light transcript repair for Swedish/English (email/times normalizations).
     Returns ONLY the corrected text.
     """
     system_prompt = (
         "Du är ett transkript-reparationsfilter för svenska/engelska. "
         "Korrigera fel från tal-till-text utan att ändra betydelsen.\n"
         "Regler:\n"
-        "1) Korrigera uppenbara stavfel via kontext (t.ex. 'buka'->'boka', 'imorlon'->'imorgon').\n"
-        "2) Siffror: skriv som siffror. Telefonnummer utan mellanslag (t.ex. 'noll sju tre' -> '073').\n"
-        "3) E-post: ersätt ' at ' och 'snabela/snabel-a' med '@'; ' dot/punkt/prick ' med '.'; "
-        "   ta bort mellanslag runt '@' och '.'. Vanliga domäner: '.kom' -> '.com'.\n"
+        "1) Korrigera uppenbara stavfel via kontext.\n"
+        "2) Siffror som siffror; telefonnummer utan mellanslag.\n"
+        "3) E-post: 'snabel-a/at'->'@'; 'punkt/dot/prick'->'.'; ta bort mellanslag runt '@' och '.'. '.kom'->'.com'.\n"
         "4) Tider: '10 00' -> '10:00'.\n"
-        "5) Lägg inte till information. Behåll språk och innebörd. Returnera endast den korrigerade texten."
+        "5) Lägg inte till information. Returnera endast den korrigerade texten."
     )
     resp = client_oa.chat.completions.create(
         model="gpt-4o-mini",
@@ -391,86 +410,105 @@ def repair_text_with_gpt(text: str, lang: str = "sv-SE") -> str:
     )
     return (resp.choices[0].message.content or "").strip()
 
+# -------------------- MAIN INPUT ROUTE --------------------
 @app.post("/process_input")
 def process_input():
     data = request.get_json() or {}
     is_final = bool(data.get("is_final"))
     lang = (data.get("lang") or "sv-SE").strip()
 
+    # conversation id from payload or header (fallback to "local" for tests)
+    conv_id = (data.get("conv_id")
+               or data.get("conversation_id")
+               or data.get("conversationId")
+               or request.headers.get("X-Conversation-Id")
+               or "local")
+    SESSION.setdefault(conv_id, {"slots": {}, "verified": False, "last_tool": None, "created_booking": False})
+
     text_in = (data.get("text") or "").strip()
     audio_b64 = data.get("audio_base64")
     audio_mime = (data.get("audio_mime") or "audio/wav").strip()
 
-    print(f"[IN] text_in='{text_in}' lang={lang} is_final={is_final}")
+    print(f"[IN] cid={conv_id} text='{text_in}' lang={lang} is_final={is_final}")
 
     corrected_text = text_in
     if not corrected_text:
         return jsonify({"error": "No text"}), 400
 
     try:
-        print("[GPT] calling repair_text_with_gpt...")
         corrected_text = repair_text_with_gpt(corrected_text, lang=lang)
-        print(f"[GPT] result='{corrected_text}'")
     except Exception as e:
         print(f"[WARN] GPT repair failed: {e}")
 
     corrected_text = normalize_spelled_email(corrected_text)
-    print(f"[NORM] after normalize='{corrected_text}'")
+    print(f"[NORM] -> '{corrected_text}'")
 
+    # light date/time extraction from utterance (doesn't overwrite if already set)
+    d, tm = parse_sv_date_time(corrected_text)
+    if d and not SESSION[conv_id]["slots"].get("date"):
+        set_slot(conv_id, "date", d)
+    if tm and not SESSION[conv_id]["slots"].get("time"):
+        set_slot(conv_id, "time", tm)
+
+    # --- BOOKING GATE (only when verified & all slots present) ---
+    if booking_allowed(conv_id):
+        s = SESSION[conv_id]["slots"]
+        payload = {
+            "clinic": CLINIC,
+            "name":  s["name"],
+            "email": s["email"],
+            "phone": s.get("phone"),
+            "date":  s["date"],
+            "time":  s["time"],
+            "treatment": s["treatment"],
+        }
+        ok, info = safe_create_booking(payload)
+        if ok:
+            SESSION[conv_id]["created_booking"] = True
+            reply = (f"Toppen! Jag bokade {payload['treatment']} {payload['date']} {payload['time']}. "
+                     f"Bokningsnummer {info}. Behöver du något mer?")
+        else:
+            if info == "duplicate_attempt":
+                reply = "Jag har redan registrerat den bokningen nyss. Vill du ändra något?"
+            else:
+                reply = ("Jag försökte boka men något gick fel. "
+                         "Vill du att jag försöker igen eller vill du ge en annan tid?")
+        # compact logging (redacted)
+        def _redact(s_: str) -> str:
+            s_ = re.sub(r"\b\d{6}[- ]?\d{4}\b", "[PNR]", s_)
+            s_ = re.sub(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", "[EMAIL]", s_)
+            return s_
+        log_obj = {
+            "cid": conv_id,
+            "text_in": _redact(text_in),
+            "corrected": _redact(corrected_text),
+            "slots": SESSION.get(conv_id,{}).get("slots", {}),
+            "verified": SESSION.get(conv_id,{}).get("verified", False),
+        }
+        print("[TURN]", json.dumps(log_obj, ensure_ascii=False))
+        return jsonify({"response": reply, "end_turn": is_final})
+
+    # default echo (dev)
     reply = f"Jag hörde: {corrected_text}"
-    print(f"[OUT] reply='{reply}'")
+
+    # compact logging (redacted)
+    def _redact(s_: str) -> str:
+        s_ = re.sub(r"\b\d{6}[- ]?\d{4}\b", "[PNR]", s_)
+        s_ = re.sub(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", "[EMAIL]", s_)
+        return s_
+    log_obj = {
+        "cid": conv_id,
+        "text_in": _redact(text_in),
+        "corrected": _redact(corrected_text),
+        "slots": SESSION.get(conv_id,{}).get("slots", {}),
+        "verified": SESSION.get(conv_id,{}).get("verified", False),
+    }
+    print("[TURN]", json.dumps(log_obj, ensure_ascii=False))
     return jsonify({"response": reply, "end_turn": is_final})
+# -------------------------------------------------------------
 
 from portal import init_portal  # send_email_html is imported lazily where needed
 init_portal(app)
-
-
-@app.post("/twilio/voice")
-def twilio_voice():
-    """Twilio calls this when someone dials your number.
-    We return TwiML that tells Twilio to open a WebSocket stream
-    directly to ElevenLabs ConvAI so your agent can talk in real time.
-    """
-    resp = VoiceResponse()
-
-    # Small greeting while the stream spins up (optional)
-    resp.say("Kopplar dig till assistenten, ett ögonblick.", language="sv-SE")
-
-    connect = Connect()
-    stream = Stream(url="wss://api.elevenlabs.io/v1/convai/stream")
-
-    # Required auth + agent info for ElevenLabs
-    stream.parameter(name="agent_id", value=ELEVEN_AGENT_ID)
-    stream.parameter(name="xi_api_key", value=XI_API_KEY)
-
-    # (Optional) tag the call with caller's number
-    from_number = request.form.get("From", "")
-    if from_number:
-        stream.parameter(name="caller_id", value=from_number)
-
-    connect.append(stream)
-    resp.append(connect)
-
-    return str(resp), 200, {"Content-Type": "text/xml"}
-
-
-@app.post("/twilio/status")
-def twilio_status():
-    """
-    Receives Twilio call lifecycle webhooks (queued, ringing, in-progress, completed, busy, failed…).
-    Make sure your Twilio number > Voice > "Call status changes" is set to POST this URL.
-    """
-    f = request.form  # MultiDict
-    log = {
-        "event": f.get("CallStatus"),     # queued | ringing | in-progress | completed | no-answer | busy | failed | canceled
-        "sid":   f.get("CallSid"),
-        "from":  f.get("From"),
-        "to":    f.get("To"),
-        "dur":   f.get("CallDuration"),    # only present on completed
-        "reason": f.get("SipResponseCode") or f.get("AnsweredBy") or f.get("ErrorCode")
-    }
-    print("[Twilio Status]", log)
-    return ("", 204)
 
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5000))
