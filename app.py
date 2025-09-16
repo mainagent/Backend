@@ -42,8 +42,7 @@ client_oa = OpenAI()
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
 # -------------------- SESSION & BOOKING GATES --------------------
-# One unified session store (per conversation/call)
-SESSION = {}  # {conversation_id: {"slots": {...}, "verified": False, "last_tool": None, "created_booking": False}}
+SESSION = {}  # {conversation_id: {...}}
 
 def session_reset(cid: str):
     SESSION[cid] = {"slots": {}, "verified": False, "last_tool": None, "created_booking": False}
@@ -66,7 +65,6 @@ def booking_allowed(cid: str) -> bool:
     s = SESSION.get(cid, {})
     return (s.get("verified") is True) and (s.get("created_booking") is not True) and slots_ready(cid)
 
-# idempotency (avoid dupes if the LLM retries)
 LAST_BOOK = {}  # {hash_key: timestamp}
 
 def _idem_key(s: dict) -> str:
@@ -76,7 +74,7 @@ def _idem_key(s: dict) -> str:
 def safe_create_booking(payload: dict) -> tuple[bool, str]:
     k = _idem_key(payload)
     now = time.time()
-    if k in LAST_BOOK and now - LAST_BOOK[k] < 60:  # 60s guard window
+    if k in LAST_BOOK and now - LAST_BOOK[k] < 60:
         return False, "duplicate_attempt"
     ok, info = create_booking_via_portal(payload)
     if ok:
@@ -125,7 +123,6 @@ def _compose_event(data: dict):
 
 app = Flask(__name__)
 
-# Temporary in-memory "database" (kept)
 appointments = {}
 
 def generate_short_id(length=4):
@@ -213,26 +210,6 @@ def ping():
 def admin_page():
     return send_from_directory("static", "admin.html")
 
-@app.route("/track", methods=["POST"])
-def track_package():
-    data = request.get_json()
-    tracking_number = data.get("tracking_number")
-    return jsonify({
-        "status": "Package is at terminal",
-        "last_location": "Gothenburg, Sweden",
-        "expected_delivery": "2025-08-10"
-    })
-
-@app.route("/recheck_sms", methods=["POST"])
-def recheck_sms():
-    data = request.get_json()
-    tracking_number = data.get("tracking_number", "")
-    return jsonify({
-        "action": "recheck_sms",
-        "status": "SMS notification resent",
-        "tracking_number": tracking_number
-    })
-
 # ---------------- EMAIL HELPER ----------------
 def send_email_helper(to, subject, body):
     if not to or "@" not in to:
@@ -244,124 +221,6 @@ def send_email_helper(to, subject, body):
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(os.getenv("EMAIL_USER"), os.getenv("EMAIL_PASS"))
         server.sendmail(os.getenv("EMAIL_USER"), [to], msg.as_string())
-
-# ---------------- RESEND CONFIRMATION (kept) ----------------
-@app.route("/resend_confirmation", methods=["POST"])
-def resend_confirmation():
-    data = request.get_json() or {}
-    appointment_id = (data.get("appointment_id") or "").strip().upper()
-    appt = None
-    target_id = None
-    if appointment_id:
-        appt = appointments.get(appointment_id)
-        if appt:
-            target_id = appointment_id
-        else:
-            appointment_id = ""
-    if not appt:
-        name = (data.get("name") or "").strip().lower()
-        date = (data.get("date") or "").strip()
-        time_s = (data.get("time") or "").strip()
-        if not (name and date and time_s):
-            return jsonify({
-                "error": "Provide either a valid appointment_id OR name+date+time"
-            }), 400
-        matches = [
-            (aid, a) for aid, a in appointments.items()
-            if a.get("name","").strip().lower() == name
-            and a.get("date","").strip() == date
-            and a.get("time","").strip() == time_s
-        ]
-        if not matches:
-            return jsonify({"error": "No matching appointment found"}), 404
-        if len(matches) > 1:
-            return jsonify({
-                "error": "Multiple matches found; please provide appointment_id"
-            }), 409
-        target_id, appt = matches[0]
-
-    html = f"""
-    <!doctype html>
-    <html>
-      <body style="font-family: -apple-system, Segoe UI, Roboto, Arial; background:#f8fafc; padding:24px;">
-        <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px; margin:auto; background:white; border-radius:12px; box-shadow:0 1px 6px rgba(0,0,0,0.06);">
-          <tr>
-            <td style="padding:24px 28px;">
-              <h2 style="margin:0 0 12px 0; font-size:20px; color:#0f172a;">Bokningsbekräftelse (igen)</h2>
-              <table cellpadding="0" cellspacing="0" style="width:100%; background:#f1f5f9; border-radius:8px; padding:12px;">
-                <tr><td><strong>Behandling:</strong> {appt['treatment']}</td></tr>
-                <tr><td><strong>Datum:</strong> {appt['date']}</td></tr>
-                <tr><td><strong>Tid:</strong> {appt['time']}</td></tr>
-                <tr><td><strong>Boknings-ID:</strong> {target_id}</td></tr>
-              </table>
-              <p style="margin:8px 0 0 0; color:#64748b; font-size:12px;">Vänliga hälsningar,<br/>Tandläkarkliniken</p>
-            </td>
-          </tr>
-        </table>
-      </body>
-    </html>
-    """
-    from portal import send_email_html  # avoid circular on startup
-    send_email_html(
-        to=appt["email"],
-        subject="Din tandläkartid (påminnelse)",
-        html=html
-    )
-    return jsonify({
-        "status": "resent",
-        "appointment_id": target_id,
-        "email": appt["email"]
-    }), 200
-
-@app.route("/send_email", methods=["POST"])
-def send_email():
-    try:
-        data = request.get_json(force=True) or {}
-        to = (data.get("to") or "").strip()
-        subject = (data.get("subject") or "").strip()
-        body = (data.get("body") or "").strip()
-        send_email_helper(to, subject, body)
-        return jsonify({"status": "sent", "to": to, "subject": subject}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/flag_human_support_request", methods=["POST"])
-def flag_human_support_request():
-    data = request.get_json()
-    tracking_number = data.get("tracking_number")
-    reason = data.get("reason", "Unclear issue")
-    return jsonify({
-        "action": "flag_human_support_request",
-        "status": "Human support flagged for follow-up",
-        "tracking_number": tracking_number,
-        "reason": reason
-    })
-
-@app.route("/resend_notification", methods=["POST"])
-def resend_notification():
-    return handle_resend_notification()
-
-@app.route("/verify_customs_docs_needed", methods=["POST"])
-def verify_customs_docs_needed():
-    data = request.get_json()
-    tracking_number = data.get("tracking_number")
-    return jsonify({
-        "action": "verify_customs_docs_needed",
-        "status": "Customs documents required",
-        "instructions": "Please upload your ID and invoice at postnord.se/tull within 24 hours to avoid return.",
-        "tracking_number": tracking_number
-    })
-
-@app.route("/provide_est_delivery_window", methods=["POST"])
-def provide_est_delivery_window():
-    data = request.get_json()
-    tracking_number = data.get("tracking_number")
-    return jsonify({
-        "action": "provide_est_delivery_window",
-        "tracking_number": tracking_number,
-        "estimated_window": "Between 14:00 - 18:00 on 2025-08-10",
-        "status": "Delivery window provided"
-    })
 
 # ====== portal client ======
 DATE_RE = r"(20\d{2}-\d{2}-\d{2})"
@@ -386,10 +245,6 @@ def create_booking_via_portal(payload: dict) -> tuple[bool, str]:
         return False, f"portal exception: {e}"
 
 def repair_text_with_gpt(text: str, lang: str = "sv-SE") -> str:
-    """
-    Light transcript repair for Swedish/English (email/times normalizations).
-    Returns ONLY the corrected text.
-    """
     system_prompt = (
         "Du är ett transkript-reparationsfilter för svenska/engelska. "
         "Korrigera fel från tal-till-text utan att ändra betydelsen.\n"
@@ -417,7 +272,6 @@ def process_input():
     is_final = bool(data.get("is_final"))
     lang = (data.get("lang") or "sv-SE").strip()
 
-    # conversation id from payload or header (fallback to "local" for tests)
     conv_id = (data.get("conv_id")
                or data.get("conversation_id")
                or data.get("conversationId")
@@ -440,17 +294,19 @@ def process_input():
     except Exception as e:
         print(f"[WARN] GPT repair failed: {e}")
 
-    corrected_text = normalize_spelled_email(corrected_text)
-    print(f"[NORM] -> '{corrected_text}'")
+    # Normalize email
+    norm_text = normalize_spelled_email(corrected_text)
+    print(f"[NORM] in='{corrected_text}' -> '{norm_text}'")
 
-    # light date/time extraction from utterance (doesn't overwrite if already set)
-    d, tm = parse_sv_date_time(corrected_text)
+    if validate_email(norm_text) and not SESSION[conv_id]["slots"].get("email"):
+        set_slot(conv_id, "email", norm_text)
+
+    d, tm = parse_sv_date_time(norm_text)
     if d and not SESSION[conv_id]["slots"].get("date"):
         set_slot(conv_id, "date", d)
     if tm and not SESSION[conv_id]["slots"].get("time"):
         set_slot(conv_id, "time", tm)
 
-    # --- BOOKING GATE (only when verified & all slots present) ---
     if booking_allowed(conv_id):
         s = SESSION[conv_id]["slots"]
         payload = {
@@ -471,9 +327,12 @@ def process_input():
             if info == "duplicate_attempt":
                 reply = "Jag har redan registrerat den bokningen nyss. Vill du ändra något?"
             else:
-                reply = ("Jag försökte boka men något gick fel. "
-                         "Vill du att jag försöker igen eller vill du ge en annan tid?")
-        # compact logging (redacted)
+                if payload["email"] and not validate_email(payload["email"]):
+                    reply = "E-postadressen verkar ogiltig. Kan du säga den igen med snabel-a och punkt?"
+                else:
+                    reply = ("Jag försökte boka men något blev fel. "
+                             "Vill du att jag försöker igen eller ge en annan tid?")
+
         def _redact(s_: str) -> str:
             s_ = re.sub(r"\b\d{6}[- ]?\d{4}\b", "[PNR]", s_)
             s_ = re.sub(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", "[EMAIL]", s_)
@@ -481,17 +340,15 @@ def process_input():
         log_obj = {
             "cid": conv_id,
             "text_in": _redact(text_in),
-            "corrected": _redact(corrected_text),
+            "corrected": _redact(norm_text),
             "slots": SESSION.get(conv_id,{}).get("slots", {}),
             "verified": SESSION.get(conv_id,{}).get("verified", False),
         }
         print("[TURN]", json.dumps(log_obj, ensure_ascii=False))
         return jsonify({"response": reply, "end_turn": is_final})
 
-    # default echo (dev)
-    reply = f"Jag hörde: {corrected_text}"
+    reply = f"Jag hörde: {norm_text}"
 
-    # compact logging (redacted)
     def _redact(s_: str) -> str:
         s_ = re.sub(r"\b\d{6}[- ]?\d{4}\b", "[PNR]", s_)
         s_ = re.sub(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", "[EMAIL]", s_)
@@ -499,15 +356,14 @@ def process_input():
     log_obj = {
         "cid": conv_id,
         "text_in": _redact(text_in),
-        "corrected": _redact(corrected_text),
+        "corrected": _redact(norm_text),
         "slots": SESSION.get(conv_id,{}).get("slots", {}),
         "verified": SESSION.get(conv_id,{}).get("verified", False),
     }
     print("[TURN]", json.dumps(log_obj, ensure_ascii=False))
     return jsonify({"response": reply, "end_turn": is_final})
-# -------------------------------------------------------------
 
-from portal import init_portal  # send_email_html is imported lazily where needed
+from portal import init_portal
 init_portal(app)
 
 if __name__ == "__main__":
