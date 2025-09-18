@@ -558,6 +558,9 @@ def bankid_verify_and_mark():
     SESSION[conv_id]["verified"] = True
     return jsonify({"ok": True, "conv_id": conv_id, "verified": True})
 
+from portal import init_portal
+init_portal(app)
+
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=PORT)
