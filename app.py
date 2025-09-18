@@ -495,6 +495,16 @@ def process_input():
     print("[TURN]", json.dumps({"cid": conv_id, "stage": "echo"}, ensure_ascii=False))
     return jsonify({"response": reply, "end_turn": is_final})
 
+@app.post("/conv/mark_verified")
+def mark_verified():
+    data = request.get_json(force=True) or {}
+    cid = (data.get("conv_id") or data.get("conversation_id") or data.get("conversationId") or "").strip()
+    if not cid:
+        return jsonify({"ok": False, "error": "missing conv_id"}), 400
+    SESSION.setdefault(cid, {"slots": {}, "verified": False, "last_tool": None, "created_booking": False})
+    SESSION[cid]["verified"] = True
+    return jsonify({"ok": True, "conv_id": cid, "verified": True})
+
 @app.post("/bankid/verify_and_mark")
 def bankid_verify_and_mark():
     """
