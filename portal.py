@@ -378,6 +378,11 @@ def portal_reschedule(booking_id: int):
 def portal_create_booking():
     if not require_portal_key(request):
         return jsonify({"error": "forbidden"}), 403
+    
+    # Require 'X-Verified' header for safety (set to 'true' only after BankID)
+    verified_hdr = (request.headers.get("X-Verified") or "").lower().strip()
+    if verified_hdr != "true":
+        return jsonify({"error": "verification_required"}), 403
 
     data = request.get_json(force=True) or {}
     clinic = (request.args.get("clinic") or os.getenv("CLINIC", "default")).strip().lower()

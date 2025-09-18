@@ -226,6 +226,49 @@ def send_email_helper(to, subject, body):
 DATE_RE = r"(20\d{2}-\d{2}-\d{2})"
 TIME_RE = r"\b([01]?\d|2[0-3]):([0-5]\d)\b"
 
+PNR_RE = re.compile(r"\b(\d{6}[- ]?\d{4}|\d{8}[- ]?\d{4})\b")
+
+def _clean_personnummer(s: str) -> str | None:
+    if not s: 
+        return None
+    digits = re.sub(r"\D", "", s)
+    if len(digits) == 10:  # YYMMDDXXXX -> guess century
+        digits = ("19" if digits[0] in "6789" else "20") + digits
+    return digits if len(digits) == 12 else None
+
+def _bankid_start_local(pnr: str) -> tuple[bool, str | None]:
+    """Calls your own BankID Start endpoint; returns (ok, orderRef)."""
+    try:
+        r = requests.post(
+            f"{PORTAL_BASE}/portal/api/bankid/start",
+            headers={"Content-Type": "application/json"},
+            json={"personal_number": pnr},
+            timeout=10,
+        )
+        j = r.json() if r.content else {}
+        if r.status_code == 200 and j.get("ok") and j.get("orderRef"):
+            return True, j["orderRef"]
+        return False, None
+    except Exception as e:
+        print(f"[BANKID] start error: {e}")
+        return False, None
+
+def _bankid_status_local(order_ref: str) -> tuple[bool, str]:
+    """Returns (ok, status) where status ∈ {'pending','complete','failed'}."""
+    try:
+        r = requests.get(
+            f"{PORTAL_BASE}/portal/api/bankid/status",
+            params={"orderRef": order_ref},
+            timeout=10,
+        )
+        j = r.json() if r.content else {}
+        if r.status_code == 200 and j.get("ok"):
+            return True, j.get("status", "pending")
+        return False, "failed"
+    except Exception as e:
+        print(f"[BANKID] status error: {e}")
+        return False, "failed"
+
 def create_booking_via_portal(payload: dict) -> tuple[bool, str]:
     try:
         r = requests.post(
@@ -233,6 +276,25 @@ def create_booking_via_portal(payload: dict) -> tuple[bool, str]:
             headers={
                 "Content-Type": "application/json",
                 "X-Portal-Key": PORTAL_KEY,
+            },
+            params={"clinic": payload.get("clinic", CLINIC)},
+            json=payload,
+            timeout=12,
+        )
+        if r.status_code == 200 and (r.json() or {}).get("ok"):
+            return True, str((r.json() or {}).get("id"))
+        return False, f"portal error {r.status_code}: {r.text[:200]}"
+    except Exception as e:
+        return False, f"portal exception: {e}"
+# only call this after BankID verification  
+def create_booking_via_portal_verified(payload: dict) -> tuple[bool, str]:
+    try:
+        r = requests.post(
+            f"{PORTAL_BASE}/portal/api/bookings/new",
+            headers={
+                "Content-Type": "application/json",
+                "X-Portal-Key": PORTAL_KEY,
+                "X-Verified": "true",  # <- only use this path after BankID
             },
             params={"clinic": payload.get("clinic", CLINIC)},
             json=payload,
@@ -277,36 +339,133 @@ def process_input():
                or data.get("conversationId")
                or request.headers.get("X-Conversation-Id")
                or "local")
-    SESSION.setdefault(conv_id, {"slots": {}, "verified": False, "last_tool": None, "created_booking": False})
+
+    SESSION.setdefault(conv_id, {
+        "slots": {},
+        "verified": False,
+        "last_tool": None,
+        "created_booking": False,
+        "bankid": {"orderRef": None, "asked": False, "last_prompt": 0}
+    })
 
     text_in = (data.get("text") or "").strip()
-    audio_b64 = data.get("audio_base64")
-    audio_mime = (data.get("audio_mime") or "audio/wav").strip()
-
-    print(f"[IN] cid={conv_id} text='{text_in}' lang={lang} is_final={is_final}")
-
-    corrected_text = text_in
-    if not corrected_text:
+    if not text_in:
         return jsonify({"error": "No text"}), 400
 
+    print(f"[IN] cid={conv_id} text='{text_in}' is_final={is_final}")
+
+    # --- light repair + email normalization (kept) ---
+    corrected_text = text_in
     try:
         corrected_text = repair_text_with_gpt(corrected_text, lang=lang)
     except Exception as e:
         print(f"[WARN] GPT repair failed: {e}")
+    corrected_text = normalize_spelled_email(corrected_text)
+    print(f"[NORM] -> '{corrected_text}'")
 
-    # Normalize email
-    norm_text = normalize_spelled_email(corrected_text)
-    print(f"[NORM] in='{corrected_text}' -> '{norm_text}'")
+    # --- extract date/time if casually mentioned (kept) ---
+    d, tm = parse_sv_date_time(corrected_text)
+    if d and not SESSION[conv_id]["slots"].get("date"): set_slot(conv_id, "date", d)
+    if tm and not SESSION[conv_id]["slots"].get("time"): set_slot(conv_id, "time", tm)
 
-    if validate_email(norm_text) and not SESSION[conv_id]["slots"].get("email"):
-        set_slot(conv_id, "email", norm_text)
+    slots = SESSION[conv_id]["slots"]
 
-    d, tm = parse_sv_date_time(norm_text)
-    if d and not SESSION[conv_id]["slots"].get("date"):
-        set_slot(conv_id, "date", d)
-    if tm and not SESSION[conv_id]["slots"].get("time"):
-        set_slot(conv_id, "time", tm)
+    # ===== 1) COLLECT MANDATORY SLOTS in fixed order =====
+    # name
+    if not slots.get("name"):
+        m = re.search(r"\b(jag heter|mitt namn är)\s+([A-Za-zÅÄÖåäö\- ]+)", corrected_text)
+        if m:
+            set_slot(conv_id, "name", m.group(2).strip())
+            reply = f"Tack {slots.get('name','')}. Vilken e-post vill du använda?"
+        else:
+            reply = "Vad heter du?"
+        print("[TURN]", json.dumps({"cid": conv_id, "stage": "ask_name", "slots": slots}, ensure_ascii=False))
+        return jsonify({"response": reply, "end_turn": is_final})
 
+    # email
+    if not slots.get("email"):
+        # try to extract an email-looking token from the normalized text
+        maybe = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", corrected_text)
+        if maybe:
+            set_slot(conv_id, "email", maybe.group(0))
+            reply = "Tack! Vilken behandling gäller det?"
+        else:
+            reply = "Bokstavera din e-post, säg 'snabel-a' för @ och 'punkt' för ."
+        print("[TURN]", json.dumps({"cid": conv_id, "stage": "ask_email", "slots": slots}, ensure_ascii=False))
+        return jsonify({"response": reply, "end_turn": is_final})
+
+    # treatment
+    if not slots.get("treatment"):
+        # simple catch
+        m = re.search(r"\b(undersökning|akut|hygienist|kontroll|blekning)\b", corrected_text)
+        if m:
+            set_slot(conv_id, "treatment", m.group(1))
+            reply = "Vilket datum vill du komma? Säg t.ex. 2025-09-01."
+        else:
+            reply = "Vilken behandling vill du boka? (t.ex. undersökning, akut, hygienist)"
+        print("[TURN]", json.dumps({"cid": conv_id, "stage": "ask_treatment", "slots": slots}, ensure_ascii=False))
+        return jsonify({"response": reply, "end_turn": is_final})
+
+    # date
+    if not slots.get("date"):
+        if d:
+            set_slot(conv_id, "date", d)
+            reply = "Vilken tid passar? (t.ex. 10:00)"
+        else:
+            reply = "Vilket datum vill du komma? Säg t.ex. 2025-09-01."
+        print("[TURN]", json.dumps({"cid": conv_id, "stage": "ask_date", "slots": slots}, ensure_ascii=False))
+        return jsonify({"response": reply, "end_turn": is_final})
+
+    # time
+    if not slots.get("time"):
+        if tm:
+            set_slot(conv_id, "time", tm)
+            reply = "Toppen. Jag behöver verifiera dig med BankID."
+        else:
+            reply = "Vilken tid passar? (t.ex. 10:00)"
+        print("[TURN]", json.dumps({"cid": conv_id, "stage": "ask_time", "slots": slots}, ensure_ascii=False))
+        return jsonify({"response": reply, "end_turn": is_final})
+
+    # ===== 2) BANKID GATE (mandatory before booking) =====
+    if not SESSION[conv_id]["verified"]:
+        bank = SESSION[conv_id]["bankid"]
+        # If we don't have an orderRef yet, try to capture pnr from this turn
+        if not bank.get("orderRef"):
+            # ask for pnr or parse it
+            pnr_match = PNR_RE.search(corrected_text)
+            if pnr_match:
+                pnr = _clean_personnummer(pnr_match.group(0))
+                if pnr:
+                    ok, order_ref = _bankid_start_local(pnr)
+                    if ok and order_ref:
+                        bank["orderRef"] = order_ref
+                        bank["asked"] = True
+                        reply = "Startar BankID. Öppna din BankID-app och godkänn – säg till när du är klar."
+                    else:
+                        reply = "Kunde inte starta BankID just nu. Vill du att jag försöker igen?"
+                else:
+                    reply = "Jag behöver hela personnumret, tolv siffror. Säg det långsamt tack."
+            else:
+                # first time we hit the gate: ask explicitly
+                reply = "För att boka behöver jag verifiera dig med BankID. Säg ditt personnummer, tolv siffror."
+            print("[TURN]", json.dumps({"cid": conv_id, "stage": "bankid_start", "slots": slots}, ensure_ascii=False))
+            return jsonify({"response": reply, "end_turn": is_final})
+
+        # We have an orderRef → check status
+        ok, status = _bankid_status_local(bank["orderRef"])
+        if ok and status == "complete":
+            SESSION[conv_id]["verified"] = True
+            reply = "Tack, du är verifierad. Jag bokar din tid nu."
+        elif not ok or status == "failed":
+            # reset and re-ask
+            bank["orderRef"] = None
+            reply = "Det blev fel med BankID. Vill du försöka igen?"
+        else:
+            reply = "Ett ögonblick… jag kollar din BankID-status."
+        print("[TURN]", json.dumps({"cid": conv_id, "stage": "bankid_status", "status": status}, ensure_ascii=False))
+        return jsonify({"response": reply, "end_turn": is_final})
+
+    # ===== 3) BOOKING (only AFTER verified) =====
     if booking_allowed(conv_id):
         s = SESSION[conv_id]["slots"]
         payload = {
@@ -318,53 +477,76 @@ def process_input():
             "time":  s["time"],
             "treatment": s["treatment"],
         }
-        ok, info = safe_create_booking(payload)
+        ok, info = create_booking_via_portal_verified(payload)
         if ok:
             SESSION[conv_id]["created_booking"] = True
-            reply = (f"Toppen! Jag bokade {payload['treatment']} {payload['date']} {payload['time']}. "
+            reply = (f"Klart! Jag bokade {payload['treatment']} {payload['date']} {payload['time']}. "
                      f"Bokningsnummer {info}. Behöver du något mer?")
         else:
             if info == "duplicate_attempt":
                 reply = "Jag har redan registrerat den bokningen nyss. Vill du ändra något?"
             else:
-                if payload["email"] and not validate_email(payload["email"]):
-                    reply = "E-postadressen verkar ogiltig. Kan du säga den igen med snabel-a och punkt?"
-                else:
-                    reply = ("Jag försökte boka men något blev fel. "
-                             "Vill du att jag försöker igen eller ge en annan tid?")
-
-        def _redact(s_: str) -> str:
-            s_ = re.sub(r"\b\d{6}[- ]?\d{4}\b", "[PNR]", s_)
-            s_ = re.sub(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", "[EMAIL]", s_)
-            return s_
-        log_obj = {
-            "cid": conv_id,
-            "text_in": _redact(text_in),
-            "corrected": _redact(norm_text),
-            "slots": SESSION.get(conv_id,{}).get("slots", {}),
-            "verified": SESSION.get(conv_id,{}).get("verified", False),
-        }
-        print("[TURN]", json.dumps(log_obj, ensure_ascii=False))
+                reply = "Jag försökte boka men något gick fel. Vill du att jag försöker igen?"
+        print("[TURN]", json.dumps({"cid": conv_id, "stage": "book", "ok": ok}, ensure_ascii=False))
         return jsonify({"response": reply, "end_turn": is_final})
 
-    reply = f"Jag hörde: {norm_text}"
-
-    def _redact(s_: str) -> str:
-        s_ = re.sub(r"\b\d{6}[- ]?\d{4}\b", "[PNR]", s_)
-        s_ = re.sub(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", "[EMAIL]", s_)
-        return s_
-    log_obj = {
-        "cid": conv_id,
-        "text_in": _redact(text_in),
-        "corrected": _redact(norm_text),
-        "slots": SESSION.get(conv_id,{}).get("slots", {}),
-        "verified": SESSION.get(conv_id,{}).get("verified", False),
-    }
-    print("[TURN]", json.dumps(log_obj, ensure_ascii=False))
+    # Fallback (shouldn’t really happen with the flow above)
+    reply = "Jag hörde: " + corrected_text
+    print("[TURN]", json.dumps({"cid": conv_id, "stage": "echo"}, ensure_ascii=False))
     return jsonify({"response": reply, "end_turn": is_final})
 
-from portal import init_portal
-init_portal(app)
+@app.post("/bankid/verify_and_mark")
+def bankid_verify_and_mark():
+    """
+    Demo-friendly helper:
+    - starts BankID for a given personal_number
+    - polls /portal/api/bankid/status until complete/failed
+    - if complete -> marks SESSION[conv_id]['verified'] = True
+    """
+    data = request.get_json(force=True) or {}
+    conv_id = (data.get("conv_id") or "local").strip()
+    personal_number = (data.get("personal_number") or "").strip()
+
+    if not personal_number:
+        return jsonify({"ok": False, "error": "missing personal_number"}), 400
+
+    # 1) start BankID
+    try:
+        r = requests.post(
+            f"{PORTAL_BASE}/portal/api/bankid/start",
+            json={"personal_number": personal_number},
+            timeout=10
+        )
+        jr = r.json()
+        if r.status_code != 200 or not jr.get("ok"):
+            return jsonify({"ok": False, "error": "start_failed", "details": jr}), 502
+        order_ref = jr["orderRef"]
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"start_exception: {e}"}), 502
+
+    # 2) poll status (DEMO completes in ~6s in your bankid.py)
+    status = "pending"
+    for _ in range(12):  # ~24s max
+        time.sleep(2)
+        try:
+            s = requests.get(
+                f"{PORTAL_BASE}/portal/api/bankid/status",
+                params={"orderRef": order_ref},
+                timeout=10
+            ).json()
+            status = s.get("status", "failed")
+            if status in ("complete", "failed"):
+                break
+        except Exception:
+            pass
+
+    if status != "complete":
+        return jsonify({"ok": False, "status": status}), 200
+
+    # 3) mark session verified
+    SESSION.setdefault(conv_id, {"slots": {}, "verified": False, "last_tool": None, "created_booking": False})
+    SESSION[conv_id]["verified"] = True
+    return jsonify({"ok": True, "conv_id": conv_id, "verified": True})
 
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5000))
