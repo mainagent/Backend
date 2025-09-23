@@ -19,6 +19,7 @@ import hmac, hashlib, time
 import requests
 from flask import Response
 from urllib.parse import quote_plus
+from hair import init_hair
 
 # --- Google Calendar imports ---
 from google.oauth2.credentials import Credentials
@@ -560,6 +561,7 @@ def bankid_verify_and_mark():
 
 from portal import init_portal
 init_portal(app)
+init_hair(app)
 
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5000))
