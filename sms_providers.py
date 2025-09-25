@@ -3,6 +3,9 @@ from __future__ import annotations
 import os, sys
 from typing import Protocol
 from brand_config import env_for
+from sms_providers import get_sms_client
+
+SMS = get_sms_client()
 
 class SMSClient(Protocol):
     def send(self, to_e164: str, body: str) -> None: ...

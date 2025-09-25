@@ -7,7 +7,7 @@ from flask import Blueprint, request, jsonify
 from utils_cleanup import normalize_spelled_email, validate_email
 from portal import send_email_html
 from threading import Thread
-from sms_providers import MockSMS, TwilioSMS
+from sms_providers import MockSMS, TwilioSMS, get_sms_client
 import re
 import os, time, random
 import requests
@@ -151,8 +151,8 @@ def _build_adapter() -> HairAdapter:
 
 ADAPTER: HairAdapter = _build_adapter()
 
-provider = os.getenv("SMS_PROVIDER", "mock").lower()
-SMS = TwilioSMS() if provider == "twilio" else MockSMS()
+SMS = get_sms_client("hair")
+
 
 # -----------------------------
 # Flask routes
