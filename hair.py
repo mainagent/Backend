@@ -14,7 +14,7 @@ import requests
 
 
 bp_hair = Blueprint("hair", __name__, url_prefix="/hair/api")
-
+SMS = get_sms_client("hair")
 # -----------------------------
 # Shared models (simple)
 # -----------------------------
@@ -151,7 +151,6 @@ def _build_adapter() -> HairAdapter:
 
 ADAPTER: HairAdapter = _build_adapter()
 
-SMS = get_sms_client("hair")
 
 
 # -----------------------------
