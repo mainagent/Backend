@@ -7,7 +7,7 @@ from flask import Blueprint, request, jsonify
 from utils_cleanup import normalize_spelled_email, validate_email
 from portal import send_email_html
 from threading import Thread
-from sms_providers import MockSMS, TwilioSMS, get_sms_client
+from sms_providers import get_sms_client
 import re
 import os, time, random
 import requests
