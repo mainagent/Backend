@@ -15,6 +15,7 @@ import requests
 
 bp_hair = Blueprint("hair", __name__, url_prefix="/hair/api")
 SMS = get_sms_client("hair")
+
 # -----------------------------
 # Shared models (simple)
 # -----------------------------
@@ -151,8 +152,6 @@ def _build_adapter() -> HairAdapter:
 
 ADAPTER: HairAdapter = _build_adapter()
 
-
-
 # -----------------------------
 # Flask routes
 # -----------------------------
@@ -208,6 +207,12 @@ SESSION: dict[str, dict] = {}  # conv_id -> {"slots": {...}}
 RE_TIME = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")  # HH:MM
 RE_PHONE = re.compile(r'(?:\+?46|0)\s*(?:\d[\s-]*){8,10}')
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+# More conservative cancel intent matching (reduces false positives)
+CANCEL_PAT = re.compile(
+    r"\b(avboka|avbokning|avboka min|avboka tiden|ta bort min tid|cancel)\b",
+    re.IGNORECASE
+)
 
 def _state(cid: str) -> dict:
     s = SESSION.setdefault(cid, {"slots": {}, "last_prompt": 0})
@@ -338,11 +343,7 @@ def _extract_booking_id(text: str) -> str | None:
         return None
 
 def _cancel_intent(text: str) -> bool:
-    t = (text or "").lower()
-    return any(p in t for p in [
-        "avboka", "avbokning", "kan du avboka",
-        "ta bort min tid", "ändra min bokning", "cancel"
-    ])
+    return bool(CANCEL_PAT.search(text or ""))
 
 def _format_slots_for_prompt(slots: list[dict], max_items: int = 6) -> str:
     """
@@ -494,8 +495,7 @@ def _do_booking(cid: str, salon_id: int):
     b = res["booking"]  # expect keys: id, start, service_name, ...
     msg = f"Klart! Jag bokade {b['service_name']} {b['start'][:10]} kl {b['start'][11:16]}. Boknings-ID: {b['id']}."
 
-    # email (best-effort)
-    # email (synchronous for now so we SEE errors/success in logs)
+    # email (synchronous so we SEE errors/success in logs)
     to_email = _g(cid, "email")
     if to_email:
         try:
@@ -525,14 +525,13 @@ def _do_booking(cid: str, salon_id: int):
               </body>
             </html>
             """
-            # keep same signature you used for dental:
             send_email_html(to_email, "Bokningsbekräftelse – din tid är bokad", html)
             print(f"[HAIR/EMAIL] success sent to {to_email}", flush=True)
             msg += f" Jag skickade en bekräftelse till {to_email}."
         except Exception as e:
             print(f"[HAIR/EMAIL] failed sending to {to_email}: {e}", flush=True)
 
-    # sms (best-effort)
+    # sms (best-effort, keep async)
     to_phone = _g(cid, "phone")
     if to_phone:
         def _send_sms():
@@ -562,6 +561,11 @@ def hair_process_input():
     salon_id = int(data.get("salon_id", 97))
     date_iso = data.get("date") or time.strftime("%Y-%m-%d")
     lang = (data.get("lang") or "sv-SE").lower()
+
+    # ElevenLabs may stream multiple interim chunks; only act on final
+    is_final = bool(data.get("is_final", True))
+    if not is_final:
+        return jsonify({"response": ""})
 
     # store salon_id for later email body use
     _set(cid, "salon_id", salon_id)
@@ -615,16 +619,24 @@ def hair_process_input():
     # ---- end cancel handler ----
 
     st = _state(cid)
-    # try fill from this utterance
+
+    # ---- TRY FILL SLOTS FROM THIS TURN ----
     if not _g(cid, "name"):
         n = _extract_name(text)
-        if n: _set(cid, "name", n)
+        if n:
+            _set(cid, "name", n)
 
     if not _g(cid, "phone"):
-        p = _extract_phone(text)
-        print(f"[HAIR] phone_extracted='{p}' from text='{text}'")
-        if p:
-            _set(cid, "phone", p)
+        t_low = text.lower()
+        if any(kw in t_low for kw in ["ingen", "utan nummer", "har ingen"]):
+            _set(cid, "phone", None)
+            _set(cid, "phone_confirmed", False)
+        else:
+            p = _extract_phone(text)
+            print(f"[HAIR] phone_extracted='{p}' from text='{text}'")
+            if p:
+                _set(cid, "phone", p)
+                _set(cid, "phone_confirmed", True)
 
     # --- EMAIL (robust, prefers raw parse and extracts from normalized) ---
     if not _g(cid, "email"):
@@ -637,14 +649,11 @@ def hair_process_input():
 
         # 2) Normalized (handles "snabel a" etc.), then extract the actual token from it
         e_norm_source = (normalize_spelled_email(text) or "").strip().lower()
-        # strip stray trailing punctuation (speech artifacts)
-        e_norm_source = e_norm_source.strip(" ,;:!?)\"]}<>(“”’‘")
-        # pull the email *inside* the normalized string (avoids "minemailar" prefix)
+        e_norm_source = e_norm_source.strip(" ,;:!?)\"]}<>(“”’‘")  # trim stray punctuation
         e_norm = (_parse_email(e_norm_source) or "").strip().lower()
         if e_norm:
             candidates.append(e_norm)
 
-        # 3) Pick the first valid candidate; if both valid, raw wins due to ordering above
         chosen = next((c for c in candidates if EMAIL_RE.match(c)), None)
         print(f"[HAIR] email_candidates={candidates} chosen={chosen} from text={text!r}")
         if chosen:
@@ -671,18 +680,18 @@ def hair_process_input():
             email = _g(cid, "email") or ""
             return jsonify({"response": f"Perfekt, jag tar den tiden. Vill du att jag bokar {sname} kl {hhmm} och skickar bekräftelsen till {email}?"})
 
-    # ask next missing slot
+    # ---- ASK NEXT MISSING SLOT ----
     if not _g(cid, "name"):
         return jsonify({"response": "Vad heter du?"})
 
     if not _g(cid, "phone"):
+        _set(cid, "phone_confirmed", False)
         return jsonify({"response": "Vad är ditt telefonnummer?"})
 
     if not _g(cid, "email"):
         return jsonify({"response": "Alright, och vad var din e-postadress?"})
 
     if not _g(cid, "service_id"):
-        # show top services to help user choose
         names = [s["name"] for s in ADAPTER.list_services(salon_id)][:5]
         return jsonify({"response": "Vilken behandling vill du ha? Exempel: " + " / ".join(names)})
 
@@ -713,7 +722,6 @@ def hair_process_input():
         return jsonify({"response": f"Vill du att jag bokar {sname} kl {hhmm} och skickar bekräftelsen till {email}? Svara ja eller nej."})
 
     return _do_booking(cid, salon_id)
-
 
 @bp_hair.post("/reset")
 def hair_reset():
