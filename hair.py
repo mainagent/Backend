@@ -508,6 +508,7 @@ def _do_booking(cid: str, salon_id: int):
                      Boknings-ID: {b['id']}</p>
                 </body></html>"""
                 send_email_html(to_email, "Bokningsbekräftelse – din tid är bokad", html)
+                print(f"[HAIR/EMAIL] success sent to {to_email}")
             except Exception as e:
                 print(f"[HAIR/EMAIL] failed: {e}")
         Thread(target=_send_email, daemon=True).start()
