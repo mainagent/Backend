@@ -495,24 +495,42 @@ def _do_booking(cid: str, salon_id: int):
     msg = f"Klart! Jag bokade {b['service_name']} {b['start'][:10]} kl {b['start'][11:16]}. Boknings-ID: {b['id']}."
 
     # email (best-effort)
+    # email (synchronous for now so we SEE errors/success in logs)
     to_email = _g(cid, "email")
     if to_email:
-        def _send_email():
-            try:
-                html = f"""
-                <html><body>
-                  <p><strong>Bokningsbekräftelse</strong></p>
-                  <p>Tjänst: {b['service_name']}<br/>
-                     Datum: {b['start'][:10]}<br/>
-                     Tid: {b['start'][11:16]}<br/>
-                     Boknings-ID: {b['id']}</p>
-                </body></html>"""
-                send_email_html(to_email, "Bokningsbekräftelse – din tid är bokad", html)
-                print(f"[HAIR/EMAIL] success sent to {to_email}")
-            except Exception as e:
-                print(f"[HAIR/EMAIL] failed sending to {to_email}: {e}")
-        Thread(target=_send_email, daemon=True).start()
-        msg += f" Jag skickade en bekräftelse till {to_email}."
+        try:
+            print(f"[HAIR/EMAIL] about to send to {to_email}", flush=True)
+            html = f"""
+            <!doctype html>
+            <html>
+              <body style="font-family:-apple-system,Segoe UI,Roboto,Arial; background:#f8fafc; padding:24px;">
+                <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px; margin:auto; background:white; border-radius:12px; box-shadow:0 1px 6px rgba(0,0,0,0.06);">
+                  <tr><td style="padding:24px 28px;">
+                    <h2 style="margin:0 0 12px 0; font-size:20px; color:#0f172a;">Bokningsbekräftelse</h2>
+                    <p style="margin:0 0 12px 0; color:#334155;">
+                      Hej <strong>{cust.name}</strong>! Din tid är bokad.
+                    </p>
+                    <table cellpadding="0" cellspacing="0" style="width:100%; background:#f1f5f9; border-radius:8px; padding:12px;">
+                      <tr><td><strong>Behandling:</strong> {b['service_name']}</td></tr>
+                      <tr><td><strong>Datum:</strong> {b['start'][:10]}</td></tr>
+                      <tr><td><strong>Tid:</strong> {b['start'][11:16]}</td></tr>
+                      <tr><td><strong>Boknings-ID:</strong> {b['id']}</td></tr>
+                      <tr><td><strong>Plats:</strong> Salong {_g(cid,'salon_id')}</td></tr>
+                    </table>
+                    <p style="margin:12px 0 0 0; color:#64748b; font-size:12px;">
+                      Om du behöver avboka, svara på detta mejl eller ring salongen.
+                    </p>
+                  </td></tr>
+                </table>
+              </body>
+            </html>
+            """
+            # keep same signature you used for dental:
+            send_email_html(to_email, "Bokningsbekräftelse – din tid är bokad", html)
+            print(f"[HAIR/EMAIL] success sent to {to_email}", flush=True)
+            msg += f" Jag skickade en bekräftelse till {to_email}."
+        except Exception as e:
+            print(f"[HAIR/EMAIL] failed sending to {to_email}: {e}", flush=True)
 
     # sms (best-effort)
     to_phone = _g(cid, "phone")
