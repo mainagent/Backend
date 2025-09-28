@@ -12,6 +12,8 @@ import re
 import os, time, random
 import requests
 
+# NEW: outbox imports (fallback + retries)
+from email_outbox import ensure_outbox_schema, enqueue_email
 
 bp_hair = Blueprint("hair", __name__, url_prefix="/hair/api")
 SMS = get_sms_client("hair")
@@ -498,6 +500,7 @@ def _do_booking(cid: str, salon_id: int):
     # email (synchronous so we SEE errors/success in logs)
     to_email = _g(cid, "email")
     if to_email:
+        subject = "Bokningsbekräftelse – din tid är bokad"
         try:
             print(f"[HAIR/EMAIL] about to send to {to_email}", flush=True)
             html = f"""
@@ -525,11 +528,18 @@ def _do_booking(cid: str, salon_id: int):
               </body>
             </html>
             """
-            send_email_html(to_email, "Bokningsbekräftelse – din tid är bokad", html)
+            send_email_html(to_email, subject, html)
             print(f"[HAIR/EMAIL] success sent to {to_email}", flush=True)
             msg += f" Jag skickade en bekräftelse till {to_email}."
         except Exception as e:
-            print(f"[HAIR/EMAIL] failed sending to {to_email}: {e}", flush=True)
+            # FALLBACK: queue for retry (handled by email_worker.py)
+            print(f"[HAIR/EMAIL] failed sending to {to_email}: {e} — queueing for retry", flush=True)
+            try:
+                idem = f"booking:{b['id']}:{to_email}"
+                enqueue_email(to_email, subject, html, conv_id=cid, idem_key=idem)
+                msg += f" Jag kunde inte skicka direkt, men jag försöker igen strax."
+            except Exception as e2:
+                print(f"[HAIR/EMAIL] enqueue failed for {to_email}: {e2}", flush=True)
 
     # sms (best-effort, keep async)
     to_phone = _g(cid, "phone")
@@ -734,4 +744,11 @@ def hair_reset():
 # init hook (called from app.py)
 # -----------------------------
 def init_hair(app):
+    # NEW: make sure outbox table exists on startup
+    try:
+        ensure_outbox_schema()
+        print("[HAIR] email_outbox schema ensured", flush=True)
+    except Exception as e:
+        print(f"[HAIR] failed ensuring email_outbox schema: {e}", flush=True)
+
     app.register_blueprint(bp_hair)
