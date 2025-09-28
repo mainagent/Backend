@@ -1,4 +1,3 @@
-# hair.py
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Tuple
@@ -14,6 +13,9 @@ import requests
 
 # NEW: outbox imports (fallback + retries)
 from email_outbox import ensure_outbox_schema, enqueue_email
+
+# NEW: helpers for relative-date parsing & light humor
+from datetime import datetime, timedelta
 
 bp_hair = Blueprint("hair", __name__, url_prefix="/hair/api")
 SMS = get_sms_client("hair")
@@ -216,6 +218,47 @@ CANCEL_PAT = re.compile(
     re.IGNORECASE
 )
 
+# NEW (1): reschedule intent + relative date utilities + humor
+RESCHEDULE_PAT = re.compile(
+    r"\b(ändra|ändra tiden|om\s*boka|omboka|flytta tiden|byt tid|reschedul[a-z]*)\b",
+    re.IGNORECASE
+)
+
+WEEKDAY_MAP = {
+    "måndag": 0, "tisdag": 1, "onsdag": 2, "torsdag": 3,
+    "fredag": 4, "lördag": 5, "söndag": 6
+}
+
+def _parse_relative_date(text: str, today: datetime | None = None) -> str | None:
+    """
+    Understand phrases like 'nästa vecka fredag' or 'nästa fredag'.
+    Returns YYYY-MM-DD or None.
+    """
+    if not text:
+        return None
+    t = text.lower()
+    today = today or datetime.now()
+
+    for wd_name, wd_idx in WEEKDAY_MAP.items():
+        if f"nästa {wd_name}" in t or f"nästa vecka {wd_name}" in t:
+            days_ahead = (wd_idx - today.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            if "nästa vecka" in t and days_ahead < 7:
+                days_ahead += 7
+            target = today + timedelta(days=days_ahead)
+            return target.strftime("%Y-%m-%d")
+    return None
+
+def _maybe_humor() -> str:
+    """Tiny optional hair pun."""
+    try:
+        if random.random() < 0.12:
+            return " (Hårfint fixat 😉)"
+    except Exception:
+        pass
+    return ""
+
 def _state(cid: str) -> dict:
     s = SESSION.setdefault(cid, {"slots": {}, "last_prompt": 0})
     s.setdefault("slots", {})
@@ -226,6 +269,16 @@ def _set(cid: str, k: str, v):
 
 def _g(cid: str, k: str, d=None):
     return _state(cid)["slots"].get(k, d)
+
+# NEW (4): small de-dupe responder to reduce exact repeats
+def _say(cid: str, resp: str, **payload):
+    last = _g(cid, "_last_resp") or ""
+    if resp and last and resp.strip() == last.strip():
+        resp = resp + " 🙂"
+    _set(cid, "_last_resp", resp)
+    out = {"response": resp}
+    out.update(payload)
+    return jsonify(out)
 
 def _pick_service_id(salon_id: int, text: str) -> tuple[int | None, str | None]:
     t = (text or "").lower()
@@ -496,6 +549,7 @@ def _do_booking(cid: str, salon_id: int):
 
     b = res["booking"]  # expect keys: id, start, service_name, ...
     msg = f"Klart! Jag bokade {b['service_name']} {b['start'][:10]} kl {b['start'][11:16]}. Boknings-ID: {b['id']}."
+    msg += _maybe_humor()  # NEW (5)
 
     # email (synchronous so we SEE errors/success in logs)
     to_email = _g(cid, "email")
@@ -556,6 +610,48 @@ def _do_booking(cid: str, salon_id: int):
     _set(cid, "done", True)
     return jsonify({"response": msg, "ok": True, "booking": b})
 
+# NEW (2): reschedule helper (cancel + rebook)
+def _do_reschedule(cid: str, salon_id: int, booking_id: int, new_time_id: int, date_iso: str) -> tuple[bool, str]:
+    """
+    Best-effort reschedule:
+      1) Cancel old booking_id
+      2) Rebook same service (and name/email/phone) at new_time_id
+    """
+    try:
+        res_cancel = ADAPTER.cancel_booking(salon_id, int(booking_id))
+        if not res_cancel.get("ok"):
+            return False, f"Tyvärr, jag hittade ingen bokning med ID {booking_id}. Kan du dubbelkolla numret?"
+
+        canceled = res_cancel.get("canceled") or {}
+        service_id = canceled.get("service_id") or _g(cid, "service_id")
+        if not service_id:
+            return False, "Jag saknar vilken behandling det var – kan du säga vilken behandling du vill behålla?"
+
+        cust = Customer(
+            id=cid,
+            name=_g(cid, "name") or (canceled.get("customer", {}) or {}).get("name"),
+            email=_g(cid, "email") or (canceled.get("customer", {}) or {}).get("email") or "kund@example.com",
+            phone=_g(cid, "phone") or (canceled.get("customer", {}) or {}).get("phone"),
+        )
+
+        res_book = ADAPTER.create_booking(
+            salon_id=salon_id,
+            customer=cust,
+            service_id=service_id,
+            time_id=new_time_id,
+            notes=_g(cid, "notes") or "",
+        )
+        if not res_book.get("ok"):
+            return False, "Det gick inte att boka den nya tiden. Vill du prova en annan?"
+
+        b = res_book["booking"]
+        msg = f"Klart! Jag flyttade din tid till {b['start'][:10]} kl {b['start'][11:16]} (ID: {b['id']})." + _maybe_humor()
+        _set(cid, "booking_id", str(b["id"]))
+        return True, msg
+    except Exception as e:
+        print(f"[HAIR/RESCHEDULE] error: {e}", flush=True)
+        return False, "Hoppsan, något gick snett när jag försökte flytta tiden. Vill du prova en annan tid?"
+
 # -----------------------------
 # MAIN DIALOG
 # -----------------------------
@@ -581,7 +677,7 @@ def hair_process_input():
     _set(cid, "salon_id", salon_id)
 
     if not text:
-        return jsonify({"response": "Säg något så hjälper jag dig boka."})
+        return _say(cid, "Säg något så hjälper jag dig boka.")
 
     # ---- FINAL CONFIRMATION BRANCH ----
     if _g(cid, "awaiting_confirm"):
@@ -590,14 +686,43 @@ def hair_process_input():
         if _no(text):
             _set(cid, "awaiting_confirm", False)
             slots = ADAPTER.check_availability(salon_id, _g(cid, "service_id"), date_iso)
-            return jsonify({"response": "Okej, vi bokar inte den. Vilken tid passar istället? " + _format_slots_for_prompt(slots)})
+            return _say(cid, "Okej, vi bokar inte den. Vilken tid passar istället? " + _format_slots_for_prompt(slots))
         # neither yes nor no: re-ask with summary
         s = _g(cid, "service_name") or ""
         slot = _g(cid, "slot") or {}
         hhmm = (slot.get("start") or "")[11:16]
         email = _g(cid, "email") or ""
-        return jsonify({"response": f"Vill du att jag bokar {s} kl {hhmm} och skickar bekräftelsen till {email}? Svara ja eller nej."})
+        return _say(cid, f"Vill du att jag bokar {s} kl {hhmm} och skickar bekräftelsen till {email}? Svara ja eller nej.")
     # -----------------------------------
+
+    # NEW (3): RESCHEDULE INTENT HANDLER (before cancel)
+    want_reschedule = bool(RESCHEDULE_PAT.search(text)) or _g(cid, "awaiting_resched")
+    if want_reschedule:
+        bkid = _extract_booking_id(text)
+        if not _g(cid, "booking_id") and bkid:
+            _set(cid, "booking_id", bkid)
+
+        new_date = _parse_relative_date(text) or date_iso
+        want_hhmm = _parse_time_from_text(text)
+
+        if not _g(cid, "booking_id"):
+            _set(cid, "awaiting_resched", True)
+            return _say(cid, "Självklart! Vad är ditt boknings-ID så flyttar jag tiden?")
+        if not want_hhmm:
+            _set(cid, "awaiting_resched", True)
+            return _say(cid, "Vilken tid vill du flytta till (t.ex. 15:30 eller 'första lediga på fredag')?")
+
+        service_id_for_lookup = _g(cid, "service_id") or 298
+        slots = ADAPTER.check_availability(salon_id, service_id_for_lookup, new_date)
+        new_tid = _pick_time_id(text, slots)
+        if not new_tid:
+            _set(cid, "awaiting_resched", True)
+            formatted = _format_slots_for_prompt(slots)
+            return _say(cid, f"Jag hittade inga exakta träffar. {formatted} Vilken av dem vill du ha?")
+
+        ok, msg = _do_reschedule(cid, salon_id, int(_g(cid, "booking_id")), int(new_tid), new_date)
+        _set(cid, "awaiting_resched", False)
+        return jsonify({"response": msg, "ok": ok})
 
     # ---- CANCEL INTENT HANDLER (runs before slot prompts) ----
     bkid = _extract_booking_id(text)        # e.g. finds 501484 in "avboka 501484"
@@ -606,7 +731,7 @@ def hair_process_input():
     if want_cancel:
         if not bkid:
             _set(cid, "awaiting_bkid", True)
-            return jsonify({"response": "Självklart! Vad är ditt boknings-ID så fixar jag avbokningen?"})
+            return _say(cid, "Självklart! Vad är ditt boknings-ID så fixar jag avbokningen?")
         # we have a number now → try to cancel
         _set(cid, "awaiting_bkid", False)
         try:
@@ -614,18 +739,15 @@ def hair_process_input():
             res = ADAPTER.cancel_booking(salon_id_local, int(bkid))
             if res.get("ok"):
                 return jsonify({
-                    "response": f"Klart! Jag avbokade din tid (ID {bkid}). Vill du boka något annat?",
+                    "response": f"Klart! Jag avbokade din tid (ID {bkid}). Vill du boka något annat?" + _maybe_humor(),
                     "ok": True,
                     "canceled": res.get("canceled")
                 })
             else:
-                return jsonify({
-                   "response": f"Tyvärr, jag hittade ingen bokning med ID {bkid}. Kan du dubbelkolla numret?",
-                   "ok": False
-                })
+                return _say(cid, f"Tyvärr, jag hittade ingen bokning med ID {bkid}. Kan du dubbelkolla numret?", ok=False)
         except Exception as e:
             print(f"[HAIR/CANCEL] error: {e}")
-            return jsonify({"response": "Hoppsan, något gick snett när jag försökte avboka. Vill du prova igen?", "ok": False})
+            return _say(cid, "Hoppsan, något gick snett när jag försökte avboka. Vill du prova igen?", ok=False)
     # ---- end cancel handler ----
 
     st = _state(cid)
@@ -688,22 +810,22 @@ def hair_process_input():
             hhmm = (slot.get("start") or "")[11:16]
             sname = _g(cid, "service_name") or ""
             email = _g(cid, "email") or ""
-            return jsonify({"response": f"Perfekt, jag tar den tiden. Vill du att jag bokar {sname} kl {hhmm} och skickar bekräftelsen till {email}?"})
+            return _say(cid, f"Perfekt, jag tar den tiden. Vill du att jag bokar {sname} kl {hhmm} och skickar bekräftelsen till {email}?")
 
     # ---- ASK NEXT MISSING SLOT ----
     if not _g(cid, "name"):
-        return jsonify({"response": "Vad heter du?"})
+        return _say(cid, "Vad heter du?")
 
     if not _g(cid, "phone"):
         _set(cid, "phone_confirmed", False)
-        return jsonify({"response": "Vad är ditt telefonnummer?"})
+        return _say(cid, "Vad är ditt telefonnummer?")
 
     if not _g(cid, "email"):
-        return jsonify({"response": "Alright, och vad var din e-postadress?"})
+        return _say(cid, "Alright, och vad var din e-postadress?")
 
     if not _g(cid, "service_id"):
         names = [s["name"] for s in ADAPTER.list_services(salon_id)][:5]
-        return jsonify({"response": "Vilken behandling vill du ha? Exempel: " + " / ".join(names)})
+        return _say(cid, "Vilken behandling vill du ha? Exempel: " + " / ".join(names))
 
     if not _g(cid, "time_id"):
         # show fresh availability and/or map this utterance
@@ -717,10 +839,10 @@ def hair_process_input():
             hhmm = (slot.get("start") or "")[11:16] if slot else ""
             sname = _g(cid, "service_name") or ""
             email = _g(cid, "email") or ""
-            return jsonify({"response": f"Perfekt, jag tar den tiden. Vill du att jag bokar {sname} kl {hhmm} och skickar bekräftelsen till {email}?"})
+            return _say(cid, f"Perfekt, jag tar den tiden. Vill du att jag bokar {sname} kl {hhmm} och skickar bekräftelsen till {email}?")
         if not slots:
-            return jsonify({"response": "Jag hittar inga tider idag. Vill du prova ett annat datum?"})
-        return jsonify({"response": _format_slots_for_prompt(slots)})
+            return _say(cid, "Jag hittar inga tider idag. Vill du prova ett annat datum?")
+        return _say(cid, _format_slots_for_prompt(slots))
 
     # ---- all fields present → if we haven’t confirmed yet, ask; else book ----
     if not _g(cid, "awaiting_confirm"):
@@ -729,7 +851,7 @@ def hair_process_input():
         hhmm = (slot.get("start") or "")[11:16]
         sname = _g(cid, "service_name") or ""
         email = _g(cid, "email") or ""
-        return jsonify({"response": f"Vill du att jag bokar {sname} kl {hhmm} och skickar bekräftelsen till {email}? Svara ja eller nej."})
+        return _say(cid, f"Vill du att jag bokar {sname} kl {hhmm} och skickar bekräftelsen till {email}? Svara ja eller nej.")
 
     return _do_booking(cid, salon_id)
 
